@@ -1,0 +1,4 @@
+pymobiledevice3
+Pillow
+pillow-heif
+openai
