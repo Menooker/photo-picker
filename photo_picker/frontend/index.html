@@ -9,7 +9,11 @@
 <body>
 <header class="topbar">
   <span class="brand">📷 Photo Picker</span>
-  <span id="status-badge" class="badge status badge-hidden"></span>
+  <div class="topbar-right">
+    <span id="usage-stats" class="usage-stats" title="OpenAI API token 总消耗（每次 LLM 调用后更新）">
+      缓存 0.00k · 输入 0.00k · 输出 0.00k
+    </span>
+  </div>
 </header>
 
 <main>
@@ -34,6 +38,10 @@
         </div>
         <button type="submit" id="btn-start" class="btn primary">开始分类</button>
       </form>
+      <div id="progress-wrap" class="progress-wrap" hidden>
+        <div class="progress-bar"><div id="progress-fill"></div></div>
+        <p id="progress-text" class="muted">等待 LLM 批次…</p>
+      </div>
       <p id="setup-error" class="error"></p>
     </div>
   </section>

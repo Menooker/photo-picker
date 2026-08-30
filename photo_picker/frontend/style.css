@@ -37,6 +37,31 @@ body {
 
 .brand { font-weight: 700; font-size: 1.1em; }
 
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+
+.usage-stats {
+  font-size: 0.85em;
+  color: #cbd5e1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.progress-wrap { margin-top: 14px; }
+.progress-bar {
+  height: 10px;
+  background: #e3e6ea;
+  border-radius: 999px;
+  overflow: hidden;
+}
+#progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+.progress-wrap .muted { margin: 6px 0 0; }
+
 .badge-hidden { display: none; }
 
 main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }

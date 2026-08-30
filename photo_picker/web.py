@@ -36,13 +36,28 @@ class AppSession:
         self.items: list[dict] = []   # 元数据，顺序与照片一致
         self.thumbnails: dict[str, bytes] = {}  # filename -> JPEG bytes
         self.max_thinking_tokens = max_thinking_tokens
+        # 后台分类任务状态
+        self.job: asyncio.Task | None = None
+        self.running = False
+        self.error = ""
+        self.progress: dict = {"done": 0, "total": 0}
+        # token 消耗（由 core 回调更新）
+        self.usage_snapshot: dict = {
+            "input_cached": 0, "input_uncached": 0, "output": 0, "input_total": 0,
+        }
 
     async def ensure_connected(self):
         if not self.picker:
             self.picker = PhotoPicker(max_thinking_tokens=self.max_thinking_tokens)
+            # 注册 core 回调：LLM 批次进度（并顺带刷新 token 消耗快照）
+            self.picker.on_progress = self._on_progress
         if not self.connected:
             await self.picker.connect()
             self.connected = True
+
+    def _on_progress(self, done: int, total: int) -> None:
+        self.progress = {"done": done, "total": total}
+        self.usage_snapshot.update(self.picker.usage.as_dict())
 
 
 DEFAULT_MAX_THINKING_TOKENS = 10000
@@ -95,18 +110,58 @@ async def api_classify(req: ClassifyRequest):
     with session._lock:
         try:
             await session.ensure_connected()
-            results, items = await session.picker.classify(
-                req.dir, count=req.count, start_from=req.start_from,
-                return_items=True,
-            )
         except Exception as e:
             raise _http_500(str(e))
+        if session.running:
+            raise HTTPException(status_code=409, detail="已有任务进行中")
+        session.running = True
+        session.error = ""
+        session.progress = {"done": 0, "total": 0}
+        session.items = []
+        session.thumbnails = {}
+        session.job = asyncio.create_task(_run_classify(req))
+    return {"started": True, "dir": req.dir}
 
-    session.dir = req.dir
-    result_by_id = {r.id: r for r in results}
-    session.items = [_item_meta(item, result_by_id.get(item.id)) for item in items]
-    session.thumbnails = {item.id: item.thumbnail_bytes for item in items}
-    return {"dir": req.dir, "count": len(session.items), "items": session.items}
+
+async def _run_classify(req: ClassifyRequest):
+    """后台执行分类流水线，结束后把 items/缩略图写入 session。"""
+    try:
+        out = await session.picker.classify(
+            req.dir, count=req.count, start_from=req.start_from,
+            return_items=True,
+        )
+        results, items = (([], []) if out is None else out)
+        session.dir = req.dir
+        result_by_id = {r.id: r for r in results}
+        session.items = [_item_meta(item, result_by_id.get(item.id)) for item in items]
+        session.thumbnails = {item.id: item.thumbnail_bytes for item in items}
+    except Exception:
+        traceback.print_exc()
+        session.error = traceback.format_exc()
+    finally:
+        session.usage_snapshot.update(session.picker.usage.as_dict())
+        session.running = False
+
+
+@app.get("/api/status")
+async def api_status():
+    """分类任务状态：是否运行、LLM 批次进度、token 消耗、结果 items。"""
+    return {
+        "running": session.running,
+        "done": session.progress["done"],
+        "total": session.progress["total"],
+        "error": session.error,
+        "dir": session.dir,
+        "count": len(session.items),
+        "items": session.items,
+        "usage": session.usage_snapshot,
+    }
+
+
+@app.get("/api/usage")
+async def api_usage():
+    """OpenAI API token 总消耗（每次 LLM 调用后由 core 回调更新）。"""
+    return session.usage_snapshot
 
 
 @app.get("/api/thumbs")

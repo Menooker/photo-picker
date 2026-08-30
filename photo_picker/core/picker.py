@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .importer import IPhoneImporter
 from .thumbnail import parse_metadata, make_thumbnail
-from .llm_client import LLMClient
+from .llm_client import LLMClient, TokenUsage
 from .models import PhotoItem, PhotoResult
 
 LLM_GROUP_MAX = 30
@@ -30,8 +30,12 @@ class PhotoPicker:
                  llm_model: str = "default",
                  max_thinking_tokens: int = 10000):
         self.importer = IPhoneImporter()
+        self.usage = TokenUsage()
         self.llm_client = LLMClient(base_url=llm_url, model=llm_model,
-                                    max_thinking_tokens=max_thinking_tokens)
+                                    max_thinking_tokens=max_thinking_tokens,
+                                    usage=self.usage)
+        # 可选回调，由上层（如 Web 服务器）注入：LLM 批次进度 (done, total)
+        self.on_progress: callable | None = None
         self._llm_pool = ThreadPoolExecutor(
             max_workers=LLM_WORKERS, thread_name_prefix="llm"
         )
@@ -101,6 +105,21 @@ class PhotoPicker:
         total = len(photos)
         print(f"Processing {total} photos from {top_dir}...")
 
+        # LLM 批次进度：总 batch 数 = ceil(total / LLM_GROUP_MAX)
+        total_batches = 0
+        if total > 0:
+            total_batches = (total + LLM_GROUP_MAX - 1) // LLM_GROUP_MAX
+        completed = 0
+
+        def emit_progress() -> None:
+            if self.on_progress:
+                self.on_progress(completed, total_batches)
+
+        def on_batch_done(_f) -> None:
+            nonlocal completed
+            completed += 1
+            emit_progress()
+
         # 带宽受限：主循环串行下载，Pillow 直接在主循环同步处理（无 Pillow 线程池）。
         # LLM 池保留：批量分类在后台线程执行。
         # 用信号量限制同时在途的 LLM batch 数；队列过满则阻塞主循环（背压）。
@@ -121,7 +140,10 @@ class PhotoPicker:
             fut.add_done_callback(
                 lambda _f: loop.call_soon_threadsafe(llm_slots.release)
             )
+            fut.add_done_callback(on_batch_done)
             return fut
+
+        emit_progress()
 
         for i, photo in enumerate(photos):
             raw = await self.importer.download_photo(photo)

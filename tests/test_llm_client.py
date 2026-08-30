@@ -28,7 +28,8 @@ USER_TEMPLATE = (PROMPTS_DIR / "user_template.txt").read_text(encoding="utf-8")
 
 def fake_completion(content):
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+        usage=None)
 
 
 def make_client(*contents, model="test-model"):
@@ -67,7 +68,8 @@ def test_prompt_format():
     assert call.kwargs["model"] == "test-model"
     messages = call.kwargs["messages"]
     assert call.kwargs["extra_body"] == {
-        "chat_template_kwargs": {"reasoning_budget": client.max_thinking_tokens},
+        "thinking_budget_tokens": client.max_thinking_tokens,
+        "reasoning_budget": client.max_thinking_tokens,
     }
 
     # system 消息 = system.txt 原文

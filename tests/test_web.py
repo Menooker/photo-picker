@@ -13,6 +13,7 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import photo_picker.web as web
+from photo_picker.core.llm_client import TokenUsage
 from photo_picker.core.models import PhotoItem, PhotoResult
 from PIL import Image
 
@@ -41,6 +42,7 @@ class FakeImporter:
 class FakePicker:
     def __init__(self):
         self.importer = FakeImporter()
+        self.usage = TokenUsage()
 
     async def connect(self):
         pass
@@ -80,11 +82,21 @@ async def main():
     print("api_dirs OK")
 
     r = await web.api_classify(web.ClassifyRequest(dir="100APPLE"))
-    assert r["count"] == 2, r
-    assert r["items"][0]["action"] == "DELETE", r
-    assert r["items"][1]["action"] == "KEEP_PC", r
+    assert r == {"started": True, "dir": "100APPLE"}, r
+    await web.session.job
+    st = await web.api_status()
+    assert st["running"] is False, st
+    assert st["count"] == 2, st
+    assert st["items"][0]["action"] == "DELETE", st
+    assert st["items"][1]["action"] == "KEEP_PC", st
     assert len(web.session.thumbnails) == 2
-    print("api_classify OK (returns items with thumbnails)")
+    print("api_classify OK (background job + status)")
+
+    u = await web.api_usage()
+    assert set(u) >= {"input_cached", "input_uncached", "output"}, u
+    assert "usage" in st and set(st["usage"]) >= {"input_cached", "output"}, st
+    print("api_usage OK (token 消耗统计)")
+    print("api_status OK (含 done/total 进度与 usage)")
 
     r = await web.api_thumbs(ids=["IMG_0001.HEIC", "IMG_0002.HEIC", "IMG_MISSING.HEIC"])
     assert set(r["thumbs"]) == {"IMG_0001.HEIC", "IMG_0002.HEIC"}, r

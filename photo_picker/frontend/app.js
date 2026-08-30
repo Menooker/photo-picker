@@ -36,6 +36,19 @@ async function fetchJSON(url, options) {
   return data;
 }
 
+// ---------- API token 消耗统计 ----------
+const fmtK = (n) => (n / 1000).toFixed(2) + "k";
+
+function renderUsage(usage) {
+  if (!usage) return;
+  $("usage-stats").textContent =
+    `缓存 ${fmtK(usage.input_cached)} · 输入 ${fmtK(usage.input_uncached)} · 输出 ${fmtK(usage.output)}`;
+}
+
+async function loadUsage() {
+  try { renderUsage(await fetchJSON("/api/usage")); } catch (_) { /* 服务器未就绪时忽略 */ }
+}
+
 // ---------- 初始化：加载目录列表 ----------
 async function loadDirs() {
   const sel = $("dir-select");
@@ -54,7 +67,7 @@ async function loadDirs() {
   }
 }
 
-// ---------- 分类 ----------
+// ---------- 分类（后台任务 + 轮询进度） ----------
 async function startClassify(e) {
   e.preventDefault();
   const dir = $("dir-select").value;
@@ -65,26 +78,70 @@ async function startClassify(e) {
 
   const btn = $("btn-start");
   btn.disabled = true;
-  btn.textContent = "分类中…（请耐心等待）";
+  btn.textContent = "分类中…";
   $("setup-error").textContent = "";
+  $("progress-wrap").hidden = false;
+  $("progress-fill").style.width = "0%";
+  $("progress-text").textContent = "等待 LLM 批次…";
   try {
-    const data = await fetchJSON("/api/classify", {
+    await fetchJSON("/api/classify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dir, start_from: startFrom, count }),
     });
-    state.dir = data.dir;
-    state.items = data.items;
-    state.labels = new Map(data.items.map((it) => [it.id, it.action]));
-    state.page = 0;
-    show("view-review");
-    renderReview();
+    await pollStatus();
   } catch (err) {
     $("setup-error").textContent = `分类失败：${err.message}`;
   } finally {
     btn.disabled = false;
     btn.textContent = "开始分类";
   }
+}
+
+function pollStatus() {
+  return new Promise((resolve, reject) => {
+    const timer = setInterval(async () => {
+      let st;
+      try {
+        st = await fetchJSON("/api/status");
+      } catch (err) {
+        clearInterval(timer);
+        reject(err);
+        return;
+      }
+      renderUsage(st.usage);
+
+      const total = st.total || 0;
+      if (!st.running) {
+        clearInterval(timer);
+        $("progress-wrap").hidden = true;
+        if (st.error) {
+          reject(new Error("服务器端分类失败（详见终端日志）"));
+          return;
+        }
+        if (!st.items.length) {
+          $("setup-error").textContent = "该目录没有照片。";
+          resolve();
+          return;
+        }
+        $("progress-fill").style.width = "100%";
+        state.dir = st.dir;
+        state.items = st.items;
+        state.labels = new Map(st.items.map((it) => [it.id, it.action]));
+        state.page = 0;
+        show("view-review");
+        renderReview();
+        resolve();
+        return;
+      }
+      // 进行中：更新 LLM 批次进度
+      if (total > 0) {
+        const pct = Math.round((st.done / total) * 100);
+        $("progress-fill").style.width = pct + "%";
+        $("progress-text").textContent = `LLM 批次：${st.done} / ${total}`;
+      }
+    }, 500);
+  });
 }
 
 // ---------- 缩略图加载 ----------
@@ -339,3 +396,4 @@ document.addEventListener("keydown", (e) => {
 
 show("view-setup");
 loadDirs();
+loadUsage();

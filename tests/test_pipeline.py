@@ -66,6 +66,7 @@ class FakePicker(cli.PhotoPicker):
     def __init__(self, fake_llm, llm_workers=4, count=65):
         self.importer = FakeImporter(count)
         self.llm_client = fake_llm
+        self.on_progress = None
         self._llm_pool = ThreadPoolExecutor(
             max_workers=llm_workers, thread_name_prefix="llm")
         self._closed = False

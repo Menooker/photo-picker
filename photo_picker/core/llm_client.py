@@ -1,5 +1,6 @@
 import json
 import base64
+from dataclasses import dataclass, field
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI
@@ -11,6 +12,28 @@ PROMPTS_DIR = Path(__file__).parent.parent.parent / "prompts"
 MAX_RETRIES = 2
 
 
+@dataclass
+class TokenUsage:
+    """OpenAI 接口 token 消耗累计（挂在 PhotoPicker 上的成员）。"""
+
+    input_cached: int = 0
+    input_uncached: int = 0
+    output: int = 0
+
+    def add(self, input_cached: int, input_uncached: int, output: int) -> None:
+        self.input_cached += input_cached
+        self.input_uncached += input_uncached
+        self.output += output
+
+    def as_dict(self) -> dict:
+        return {
+            "input_cached": self.input_cached,
+            "input_uncached": self.input_uncached,
+            "output": self.output,
+            "input_total": self.input_cached + self.input_uncached,
+        }
+
+
 class ResponseValidationError(Exception):
     def __init__(self, message: str):
         self.message = message
@@ -20,16 +43,20 @@ class ResponseValidationError(Exception):
 class LLMClient:
     def __init__(self, base_url: str = "http://localhost:8080/v1",
                  model: str = "default",
-                 max_thinking_tokens: int = 10000):
+                 max_thinking_tokens: int = 10000,
+                 usage: TokenUsage | None = None):
         """max_thinking_tokens: llama.cpp 推理模型的 thinking 预算。
 
         通过 OpenAI API 请求体的 extra_body（非标准字段）传给后端：
           chat_template_kwargs.reasoning_budget
         -1 = 不限；0 = 关闭思考；>0 = thinking token 上限。
+
+        usage: 累计消耗对象（由 PhotoPicker 持有），每次调用后累加。
         """
         self.client = OpenAI(base_url=base_url, api_key="not-needed")
         self.model = model
         self.max_thinking_tokens = max_thinking_tokens
+        self.usage = usage or TokenUsage()
         self._system_prompt = (PROMPTS_DIR / "system.txt").read_text(encoding="utf-8")
         self._user_template = (PROMPTS_DIR / "user_template.txt").read_text(encoding="utf-8")
         self._schema_str = json.dumps(ClassificationResponse.model_json_schema(), ensure_ascii=False, indent=2)
@@ -80,6 +107,7 @@ class LLMClient:
             )
 
             content = response.choices[0].message.content
+            self._record_usage(response)
             try:
                 validated = self._parse_and_validate(content, photo_ids)
                 return validated.results
@@ -92,6 +120,20 @@ class LLMClient:
         # 所有重试失败，返回空
         print(f"    Warning: validation failed after {1 + MAX_RETRIES} attempts")
         return []
+
+    def _record_usage(self, response) -> None:
+        """每次 LLM 调用后把 response.usage 累加进 self.usage。"""
+        usage = response.usage
+        if usage is None:
+            return
+        prompt_tokens = max(0, usage.prompt_tokens or 0)
+        output_tokens = max(0, usage.completion_tokens or 0)
+        cached = 0
+        details = usage.prompt_tokens_details
+        if details is not None:
+            cached = max(0, details.cached_tokens or 0)
+        uncached = max(0, prompt_tokens - cached)
+        self.usage.add(cached, uncached, output_tokens)
 
     def _parse_and_validate(self, content: str, expected_ids: list[str]) -> ClassificationResponse:
         """Parse and validate LLM response. Returns ClassificationResponse or raises ResponseValidationError."""
