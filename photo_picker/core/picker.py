@@ -27,9 +27,11 @@ def _process_photo(raw: bytes, filename: str) -> PhotoItem:
 
 class PhotoPicker:
     def __init__(self, llm_url: str = "http://localhost:8080/v1",
-                 llm_model: str = "default"):
+                 llm_model: str = "default",
+                 max_thinking_tokens: int = 10000):
         self.importer = IPhoneImporter()
-        self.llm_client = LLMClient(base_url=llm_url, model=llm_model)
+        self.llm_client = LLMClient(base_url=llm_url, model=llm_model,
+                                    max_thinking_tokens=max_thinking_tokens)
         self._llm_pool = ThreadPoolExecutor(
             max_workers=LLM_WORKERS, thread_name_prefix="llm"
         )
@@ -67,7 +69,12 @@ class PhotoPicker:
         return dirs
 
     async def classify(self, top_dir: str, count: int = None,
-                       start_from: str = None):
+                       start_from: str = None, return_items: bool = False):
+        """分类指定目录的照片。
+
+        return_items=True 时返回 (results, items)；
+        items 携带 thumbnail_bytes，供服务器复用（不再内部使用后丢弃）。
+        """
         photos = await self.importer.list_photos(top_dir)
         if not photos:
             print(f"No photos in /DCIM/{top_dir}")
@@ -99,6 +106,7 @@ class PhotoPicker:
         # 用信号量限制同时在途的 LLM batch 数；队列过满则阻塞主循环（背压）。
         llm_futures: list[asyncio.Future] = []
         batch_buffer: list[PhotoItem] = []
+        items: list[PhotoItem] = []
         loop = asyncio.get_running_loop()
         llm_slots = asyncio.Semaphore(LLM_QUEUE_MAX // LLM_GROUP_MAX)
 
@@ -118,6 +126,7 @@ class PhotoPicker:
         for i, photo in enumerate(photos):
             raw = await self.importer.download_photo(photo)
             item = _process_photo(raw, photo.filename)
+            items.append(item)
             batch_buffer.append(item)
 
             if len(batch_buffer) == LLM_GROUP_MAX:
@@ -156,4 +165,4 @@ class PhotoPicker:
             for r in group:
                 print(f"  {r.id} - {r.reason} ({r.confidence:.0%})")
 
-        return results
+        return (results, items) if return_items else results

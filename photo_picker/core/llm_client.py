@@ -19,9 +19,17 @@ class ResponseValidationError(Exception):
 
 class LLMClient:
     def __init__(self, base_url: str = "http://localhost:8080/v1",
-                 model: str = "default"):
+                 model: str = "default",
+                 max_thinking_tokens: int = 10000):
+        """max_thinking_tokens: llama.cpp 推理模型的 thinking 预算。
+
+        通过 OpenAI API 请求体的 extra_body（非标准字段）传给后端：
+          chat_template_kwargs.reasoning_budget
+        -1 = 不限；0 = 关闭思考；>0 = thinking token 上限。
+        """
         self.client = OpenAI(base_url=base_url, api_key="not-needed")
         self.model = model
+        self.max_thinking_tokens = max_thinking_tokens
         self._system_prompt = (PROMPTS_DIR / "system.txt").read_text(encoding="utf-8")
         self._user_template = (PROMPTS_DIR / "user_template.txt").read_text(encoding="utf-8")
         self._schema_str = json.dumps(ClassificationResponse.model_json_schema(), ensure_ascii=False, indent=2)
@@ -64,6 +72,11 @@ class LLMClient:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
+                extra_body={
+                    # llama.cpp 支持的非标准字段：限制 thinking token 预算
+                    "thinking_budget_tokens": self.max_thinking_tokens,
+                    "reasoning_budget": self.max_thinking_tokens,
+                },
             )
 
             content = response.choices[0].message.content

@@ -1,0 +1,278 @@
+:root {
+  --accent: #2f6fed;
+  --bg: #f5f6f8;
+  --card: #ffffff;
+  --text: #1f2328;
+  --muted: #6b7280;
+  --border: #e3e6ea;
+  --del: #dc2626;
+  --keep-pc: #2563eb;
+  --keep-phone: #059669;
+  --undecided: #9ca3af;
+}
+
+* { box-sizing: border-box; }
+
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  background: #12161c;
+  color: #fff;
+  z-index: 10;
+}
+
+.brand { font-weight: 700; font-size: 1.1em; }
+
+.badge-hidden { display: none; }
+
+main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
+}
+
+.setup-card { max-width: 520px; margin: 40px auto; }
+
+h2 { margin: 0 0 4px; font-size: 1.15em; }
+h3 { margin: 0 0 10px; font-size: 1em; }
+
+.muted { color: var(--muted); font-size: 0.9em; margin: 2px 0 12px; }
+
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px; }
+
+input, select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.95em;
+  background: #fff;
+}
+
+input:focus, select:focus { outline: 2px solid var(--accent); border-color: transparent; }
+
+.btn {
+  display: inline-block;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  font-size: 0.95em;
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) { background: #f0f2f5; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover:not(:disabled) { background: #2558c9; }
+
+.btn.danger { background: var(--del); border-color: var(--del); color: #fff; }
+.btn.danger:hover:not(:disabled) { background: #b91c1c; }
+
+.btn-group { display: flex; gap: 8px; }
+.btn-group.center { justify-content: center; margin-top: 18px; }
+
+.bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.error { color: var(--del); font-size: 0.9em; }
+
+/* ---- 缩略图网格 ---- */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.grid.small {
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+}
+
+.cell {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.cell:hover { transform: translateY(-2px); box-shadow: 0 6px 14px rgba(16, 24, 40, 0.12); }
+
+.cell img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  display: block;
+  cursor: zoom-in;
+  background: #eef0f3;
+}
+
+figcaption { padding: 8px; font-size: 0.78em; }
+
+.cap-top { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.cap-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; color: var(--muted); }
+.cap-sub { color: var(--muted); margin-bottom: 6px; }
+
+.label-select { font-size: 0.75em; padding: 3px 4px; }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72em;
+  font-weight: 600;
+  color: #fff;
+  flex-shrink: 0;
+}
+.badge.del { background: var(--del); }
+.badge.keep-pc { background: var(--keep-pc); }
+.badge.keep-phone { background: var(--keep-phone); }
+.badge.undecided { background: var(--undecided); }
+
+/* ---- 分页 ---- */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 16px;
+}
+.pager-info { font-size: 0.9em; color: var(--muted); min-width: 60px; text-align: center; }
+
+/* ---- 确认视图 ---- */
+.confirm-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.confirm-col {
+  background: #fafbfc;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.cell.small img { cursor: pointer; aspect-ratio: 4 / 3; }
+.cell.small figcaption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 点击放大 ---- */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.88);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  cursor: zoom-out;
+}
+.lightbox-flex {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  max-width: 96vw;
+  max-height: 92vh;
+}
+.lightbox-flex img {
+  max-width: min(68vw, 900px);
+  max-height: 92vh;
+  border-radius: 6px;
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+}
+.lightbox-info {
+  background: #fff;
+  color: var(--text);
+  border-radius: 10px;
+  padding: 18px 20px;
+  min-width: 280px;
+  max-width: 380px;
+  max-height: 80vh;
+  overflow: auto;
+}
+.lightbox-info h3 {
+  margin: 0 0 10px;
+  font-size: 1em;
+  word-break: break-all;
+}
+.info-row {
+  display: flex;
+  gap: 8px;
+  font-size: 0.88em;
+  margin-bottom: 8px;
+}
+.info-row dt {
+  color: var(--muted);
+  flex-shrink: 0;
+  min-width: 56px;
+}
+.info-row dd {
+  margin: 0;
+  word-break: break-word;
+}
+@media (max-width: 760px) {
+  .lightbox-flex { flex-direction: column; }
+}
+.close {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 1.6em;
+  cursor: pointer;
+}
+
+/* ---- 弹窗 ---- */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.modal-box {
+  background: #fff;
+  border-radius: 12px;
+  padding: 22px;
+  max-width: 420px;
+  width: calc(100% - 32px);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+}
+.modal-box h3 { margin: 0 0 10px; }
+.modal-box p { margin: 0 0 18px; color: var(--text); }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }

@@ -57,6 +57,7 @@ def test_prompt_format():
         make_photo(2, date="2023-02-28", location="", thumb=b"\x04\x05\x06"),
     ]
     client = make_client(valid_results([p.id for p in photos], action="KEEP_PHONE"))
+    assert client.max_thinking_tokens == 10000  # 默认预算
     results = client.classify_batch(photos)
     assert len(results) == 2
     assert results[0].id == "IMG_0001"
@@ -65,6 +66,9 @@ def test_prompt_format():
     call = client.client.chat.completions.create.call_args
     assert call.kwargs["model"] == "test-model"
     messages = call.kwargs["messages"]
+    assert call.kwargs["extra_body"] == {
+        "chat_template_kwargs": {"reasoning_budget": client.max_thinking_tokens},
+    }
 
     # system 消息 = system.txt 原文
     assert messages[0] == {"role": "system", "content": SYSTEM_TXT}

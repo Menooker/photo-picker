@@ -23,6 +23,17 @@ def main():
     p_classify.add_argument("--start-from", help="从指定文件名开始")
     p_classify.add_argument("--llm-url", default="http://localhost:8080/v1", help="LLM API 地址")
     p_classify.add_argument("--llm-model", default="default", help="模型名称")
+    p_classify.add_argument("--max-thinking-tokens", type=int, default=6000,
+                            help="llama.cpp thinking token 预算（-1 不限，0 关闭思考）")
+
+    # serve
+    p_serve = sub.add_parser("serve", help="启动 Web 界面（FastAPI）")
+    p_serve.add_argument("--host", default="127.0.0.1", help="监听地址")
+    p_serve.add_argument("--port", type=int, default=8000, help="监听端口")
+    p_serve.add_argument("--llm-url", default="http://localhost:8080/v1", help="LLM API 地址")
+    p_serve.add_argument("--llm-model", default="default", help="模型名称")
+    p_serve.add_argument("--max-thinking-tokens", type=int, default=5000,
+                         help="llama.cpp thinking token 预算（-1 不限，0 关闭思考）")
 
     args = parser.parse_args()
 
@@ -30,6 +41,11 @@ def main():
         asyncio.run(_list())
     elif args.command == "classify":
         asyncio.run(_classify(args))
+    elif args.command == "serve":
+        from .web import run as run_web
+        run_web(host=args.host, port=args.port, llm_url=args.llm_url,
+                llm_model=args.llm_model,
+                max_thinking_tokens=args.max_thinking_tokens)
 
 
 async def _list():
@@ -43,7 +59,8 @@ async def _list():
 
 
 async def _classify(args):
-    with PhotoPicker(llm_url=args.llm_url, llm_model=args.llm_model) as picker:
+    with PhotoPicker(llm_url=args.llm_url, llm_model=args.llm_model,
+                     max_thinking_tokens=args.max_thinking_tokens) as picker:
         try:
             await picker.connect()
             await picker.classify(args.top_dir, count=args.count,

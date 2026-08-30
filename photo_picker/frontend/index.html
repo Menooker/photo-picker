@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Picker</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <span class="brand">📷 Photo Picker</span>
+  <span id="status-badge" class="badge status badge-hidden"></span>
+</header>
+
+<main>
+  <!-- ① 选择目录 -->
+  <section id="view-setup">
+    <div class="card setup-card">
+      <h2>选择相册目录</h2>
+      <form id="setup-form">
+        <div class="field">
+          <label for="dir-select">DCIM 子目录</label>
+          <select id="dir-select" required>
+            <option value="">加载中…</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="start-from">从文件开始（可选）</label>
+          <input id="start-from" placeholder="如 IMG_0100.HEIC">
+        </div>
+        <div class="field">
+          <label for="count">数量（留空 = 全部）</label>
+          <input id="count" type="number" min="0">
+        </div>
+        <button type="submit" id="btn-start" class="btn primary">开始分类</button>
+      </form>
+      <p id="setup-error" class="error"></p>
+    </div>
+  </section>
+
+  <!-- ② 审查视图 -->
+  <section id="view-review" hidden>
+    <div class="card">
+      <div class="bar">
+        <div>
+          <h2 id="review-title"></h2>
+          <p id="review-sub" class="muted"></p>
+        </div>
+        <div class="btn-group">
+          <button id="btn-restart" class="btn">重新开始</button>
+          <button id="btn-review-done" class="btn primary">审查完毕</button>
+        </div>
+      </div>
+      <div id="review-grid" class="grid"></div>
+      <div class="pager">
+        <button id="prev-page" class="btn">‹ 上一页</button>
+        <span id="page-info" class="pager-info"></span>
+        <button id="next-page" class="btn">下一页 ›</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ③ 确认视图 -->
+  <section id="view-confirm" hidden>
+    <div class="card">
+      <div class="bar">
+        <div>
+          <h2 id="confirm-title"></h2>
+          <p class="muted">以下照片将被删除 / 移到 PC。<b>当前为演示阶段</b>，操作仅在服务器终端打印日志。
+              点击缩略图可回到该照片所在的审查页。</p>
+        </div>
+      </div>
+      <div class="confirm-cols">
+        <div class="confirm-col">
+          <h3>🗑 删除（<span id="del-count"></span>）</h3>
+          <div id="confirm-del" class="grid small"></div>
+          <p id="del-empty" class="muted">无</p>
+        </div>
+        <div class="confirm-col">
+          <h3>💾 移到 PC（<span id="move-count"></span>）</h3>
+          <div id="confirm-move" class="grid small"></div>
+          <p id="move-empty" class="muted">无</p>
+        </div>
+      </div>
+      <div class="btn-group center">
+        <button id="btn-back-review" class="btn">返回审查</button>
+        <button id="btn-confirm-exec" class="btn danger">确认执行</button>
+      </div>
+      <p id="confirm-error" class="error"></p>
+    </div>
+  </section>
+</main>
+
+<!-- 点击放大 -->
+<div id="lightbox" class="lightbox" hidden>
+  <button id="lightbox-close" class="close" aria-label="关闭">✕</button>
+  <div class="lightbox-flex">
+    <img id="lightbox-img" alt="">
+    <div id="lightbox-info" class="lightbox-info">
+      <h3 id="lightbox-title"></h3>
+      <div class="info-row"><dt>拍摄时间</dt><dd id="lb-date"></dd></div>
+      <div class="info-row"><dt>位置</dt><dd id="lb-loc"></dd></div>
+      <div class="info-row"><dt>LLM 标签</dt><dd><span id="lb-badge" class="badge"></span> <span id="lb-conf" class="muted"></span></dd></div>
+      <div class="info-row"><dt>原因</dt><dd id="lb-reason"></dd></div>
+    </div>
+  </div>
+</div>
+
+<!-- 二次确认弹窗 -->
+<div id="modal" class="modal" hidden>
+  <div class="modal-box">
+    <h3>再次确认</h3>
+    <p id="modal-text"></p>
+    <div class="modal-actions">
+      <button id="modal-cancel" class="btn">取消</button>
+      <button id="modal-ok" class="btn danger">确认</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
