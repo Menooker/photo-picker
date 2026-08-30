@@ -59,3 +59,9 @@ class IPhoneImporter:
 
     async def download_photo(self, photo: PhotoFile) -> bytes:
         return await self._afc.get_file_contents(photo.remote_path)
+
+    async def remove_file(self, remote_path: str) -> None:
+        """删除手机上的单个文件。删除失败时抛 RuntimeError。"""
+        removed = await self._afc.rm_single(remote_path, force=True)
+        if not removed:
+            raise RuntimeError(f"无法删除手机文件: {remote_path}")

@@ -11,9 +11,11 @@
 import asyncio
 import os
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
 # 保证从任意工作目录都能 import photo_picker 包
@@ -126,10 +128,55 @@ async def test_tail_batch_submitted():
     print("test_tail_batch_submitted OK")
 
 
+class ExportImporter:
+    def __init__(self, top_dir):
+        self.files = ["IMG_0001.HEIC", "IMG_0002.JPG"]
+        self.bytes_by = {f: b"jpeg-bytes-" + f.encode() for f in self.files}
+        self.removed = []
+
+    async def download_photo(self, photo):
+        await asyncio.sleep(0)
+        return self.bytes_by[photo.filename]
+
+    async def remove_file(self, remote_path):
+        await asyncio.sleep(0)
+        self.removed.append(remote_path)
+
+
+async def test_export_copy_then_delete():
+    """export_photos：先复制到本地、再删除手机原片；目录复刻相册路径。"""
+    imp = ExportImporter("100APPLE")
+    p = SimpleNamespace(importer=imp)
+    progress = []
+    with tempfile.TemporaryDirectory() as d:
+        n1 = await core_picker.PhotoPicker.export_photos(
+            p, "100APPLE", ["IMG_0001.HEIC", "IMG_0002.JPG"], d, "recycle",
+            on_progress=lambda a, b: progress.append((a, b)))
+        assert n1 == 2
+        assert (Path(d) / "recycle" / "100APPLE" / "IMG_0001.HEIC").is_file()
+        assert (Path(d) / "recycle" / "100APPLE" / "IMG_0002.JPG").is_file()
+
+        n2 = await core_picker.PhotoPicker.export_photos(
+            p, "100APPLE", ["IMG_0002.JPG"], d, "moved")
+        assert n2 == 1
+        assert (Path(d) / "moved" / "100APPLE" / "IMG_0002.JPG").is_file()
+
+        # 复制成功后才删除原片：删除时本地副本必须已在磁盘
+        assert (Path(d) / "recycle" / "100APPLE" / "IMG_0002.JPG").is_file()
+        assert imp.removed == [
+            "/DCIM/100APPLE/IMG_0001.HEIC",
+            "/DCIM/100APPLE/IMG_0002.JPG",   # recycle 副本先落盘
+            "/DCIM/100APPLE/IMG_0002.JPG",   # moved 副本先落盘
+        ]
+        assert progress == [(1, "IMG_0001.HEIC"), (2, "IMG_0002.JPG")]
+    print("test_export_copy_then_delete OK")
+
+
 async def main():
     await test_batch_sizes_and_order()
     await test_backpressure()
     await test_tail_batch_submitted()
+    await test_export_copy_then_delete()
     print("ALL OK")
 
 

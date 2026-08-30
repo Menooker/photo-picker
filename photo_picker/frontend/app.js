@@ -14,6 +14,7 @@ const state = {
   items: [],            // [{id, taken_date, width, height, location, action, confidence, reason}]
   labels: new Map(),    // id -> 当前标签（可修改）
   page: 0,
+  dest: localStorage.getItem("picker.dest") || "",  // 输出目录（持久化）
 };
 
 const $ = (id) => document.getElementById(id);
@@ -226,6 +227,10 @@ function goPage(delta) {
 
 // ---------- 确认视图 ----------
 function goConfirm() {
+  $("dest-path").value = state.dest;
+  updateDestState();
+  $("transfer-wrap").hidden = true;
+  $("confirm-error").textContent = "";
   const del = state.items.filter((it) => state.labels.get(it.id) === "DELETE");
   const move = state.items.filter((it) => state.labels.get(it.id) === "KEEP_PC");
   if (!del.length && !move.length) {
@@ -253,7 +258,8 @@ function renderConfirm() {
   $("move-count").textContent = groups.move.length;
   $("del-empty").hidden = groups.del.length > 0;
   $("move-empty").hidden = groups.move.length > 0;
-  $("btn-confirm-exec").disabled = !(groups.del.length || groups.move.length);
+  $("btn-confirm-exec").disabled =
+    !(groups.del.length || groups.move.length) || !state.dest;
 
   const bothIds = [...groups.del.map((i) => i.id), ...groups.move.map((i) => i.id)];
   fetchThumbs(bothIds).then((thumbs) => {
@@ -289,35 +295,142 @@ function renderConfirmGroup(container, list, thumbs) {
   container.appendChild(fragment);
 }
 
-// ---------- 确认执行（Dummy） ----------
+// ---------- 输出目录：路径输入 + 目录浏览 ----------
+function updateDestState() {
+  if (state.dest) {
+    $("confirm-error").textContent = "";
+  }
+}
+
+function onDestInput() {
+  state.dest = $("dest-path").value.trim();
+  localStorage.setItem("picker.dest", state.dest);
+  updateDestState();
+  if (!$("view-confirm").hidden) renderConfirm();
+}
+
+let browseParent = "";
+
+async function loadBrowse(path) {
+  $("browse-error").textContent = "";
+  $("browse-list").innerHTML = "";
+  const q = path ? "?path=" + encodeURIComponent(path) : "";
+  let d;
+  try {
+    d = await fetchJSON("/api/browse" + q);
+  } catch (err) {
+    $("browse-error").textContent = `无法浏览：${err.message}`;
+    return;
+  }
+  browseParent = d.parent;
+  $("browse-path").textContent = d.path;
+  $("browse-up").disabled = !d.parent;
+  const list = $("browse-list");
+  for (const name of d.dirs) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "browse-item";
+    row.textContent = "📁 " + name;
+    row.addEventListener("click", () => {
+      const sep = d.path.endsWith(d.sep) ? "" : d.sep;
+      loadBrowse(d.path + sep + name);
+    });
+    list.appendChild(row);
+  }
+  if (!d.dirs.length) {
+    list.innerHTML = '<p class="muted">（没有子文件夹）</p>';
+  }
+}
+
+function openDirBrowser() {
+  $("dir-browser").hidden = false;
+  $("browse-error").textContent = "";
+  loadBrowse(state.dest);
+}
+
+function confirmBrowsePath() {
+  const path = $("browse-path").textContent;
+  if (!path) return;
+  state.dest = path;
+  localStorage.setItem("picker.dest", path);
+  $("dest-path").value = path;
+  $("dir-browser").hidden = true;
+  updateDestState();
+  renderConfirm();
+}
+
+// ---------- 确认执行（复制→删除，后台任务 + 轮询） ----------
 function openConfirmModal() {
   const delIds = state.items.filter((it) => state.labels.get(it.id) === "DELETE").map((i) => i.id);
   const moveIds = state.items.filter((it) => state.labels.get(it.id) === "KEEP_PC").map((i) => i.id);
   $("modal-text").textContent =
-    `确定删除 ${delIds.length} 张、移到 PC ${moveIds.length} 张吗？（演示阶段：服务器仅打印日志，不会真的执行）`;
+    `确定删除 ${delIds.length} 张（复制到 recycle 后删除原片）、` +
+    `移到 PC ${moveIds.length} 张（复制到 moved）吗？\n输出目录：${state.dest || "（未填写）"}`;
   $("modal").hidden = false;
   $("modal-ok").dataset.del = JSON.stringify(delIds);
   $("modal-ok").dataset.move = JSON.stringify(moveIds);
 }
 
 async function execConfirm() {
+  const delIds = JSON.parse($("modal-ok").dataset.del);
+  const moveIds = JSON.parse($("modal-ok").dataset.move);
+  if (!state.dest) {
+    $("confirm-error").textContent = "请先填写输出目录。";
+    return;
+  }
+  const btn = $("btn-confirm-exec");
+  btn.disabled = true;
+  $("confirm-error").textContent = "";
+  $("transfer-wrap").hidden = false;
+  $("transfer-fill").style.width = "0%";
+  $("transfer-text").textContent = "连接服务器…";
   try {
-    const delIds = JSON.parse($("modal-ok").dataset.del);
-    const moveIds = JSON.parse($("modal-ok").dataset.move);
     const data = await fetchJSON("/api/confirm", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ delete_ids: delIds, move_ids: moveIds }),
+      body: JSON.stringify({ delete_ids: delIds, move_ids: moveIds, dest: state.dest }),
     });
-    window.alert(
-      `演示操作已记录：待删除 ${data.to_delete} 张、移至 PC ${data.to_move} 张。` +
-      "（服务器终端会打印对应日志）"
-    );
+    await pollTransfer(data.to_delete + data.to_move);
     $("modal").hidden = true;
+    window.alert(
+      `完成：删除 ${data.to_delete} 张（写入 recycle）、转移到 PC ${data.to_move} 张` +
+      `（写入 moved）。\n输出目录：${state.dest}`
+    );
     resetToSetup();
   } catch (err) {
+    $("transfer-wrap").hidden = true;
+    btn.disabled = false;
     $("confirm-error").textContent = `执行失败：${err.message}`;
   }
+}
+
+function pollTransfer(total) {
+  return new Promise((resolve, reject) => {
+    const timer = setInterval(async () => {
+      let t;
+      try {
+        t = await fetchJSON("/api/transfer");
+      } catch (err) {
+        clearInterval(timer);
+        reject(err);
+        return;
+      }
+      const pct = t.total ? Math.round((t.done / t.total) * 100) : 100;
+      $("transfer-fill").style.width = pct + "%";
+      const phase = t.phase === "recycle" ? "删除" :
+        t.phase === "moved" ? "转移到 PC" : "处理";
+      $("transfer-text").textContent =
+        `${phase}… ${t.done} / ${t.total}${t.current ? "（" + t.current + "）" : ""}`;
+      if (!t.running) {
+        clearInterval(timer);
+        if (t.error) {
+          reject(new Error("转移过程中出错（详见服务器日志）"));
+          return;
+        }
+        resolve();
+      }
+    }, 500);
+  });
 }
 
 function resetToSetup() {
@@ -378,6 +491,15 @@ $("btn-back-review").addEventListener("click", () => {
   renderReview();
 });
 $("btn-confirm-exec").addEventListener("click", openConfirmModal);
+$("dest-path").addEventListener("input", onDestInput);
+$("btn-browse").addEventListener("click", openDirBrowser);
+$("browse-up").addEventListener("click", () => browseParent && loadBrowse(browseParent));
+$("browse-home").addEventListener("click", () => loadBrowse(""));
+$("browse-cancel").addEventListener("click", () => ($("dir-browser").hidden = true));
+$("browse-confirm").addEventListener("click", confirmBrowsePath);
+$("dir-browser").addEventListener("click", (e) => {
+  if (e.target === $("dir-browser")) $("dir-browser").hidden = true;
+});
 $("modal-ok").addEventListener("click", execConfirm);
 $("modal-cancel").addEventListener("click", () => ($("modal").hidden = true));
 $("modal").addEventListener("click", (e) => {
@@ -391,9 +513,11 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     closeLightbox();
     $("modal").hidden = true;
+    $("dir-browser").hidden = true;
   }
 });
 
 show("view-setup");
+$("dest-path").value = state.dest;
 loadDirs();
 loadUsage();

@@ -1,7 +1,8 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
-from .importer import IPhoneImporter
+from .importer import IPhoneImporter, PhotoFile
 from .thumbnail import parse_metadata, make_thumbnail
 from .llm_client import LLMClient, TokenUsage
 from .models import PhotoItem, PhotoResult
@@ -188,3 +189,26 @@ class PhotoPicker:
                 print(f"  {r.id} - {r.reason} ({r.confidence:.0%})")
 
         return (results, items) if return_items else results
+
+    async def export_photos(self, top_dir: str, filenames: list[str],
+                            dest_root: str, dst_sub: str,
+                            on_progress=None) -> int:
+        """把手机照片搬出到 <dest_root>/<dst_sub>/<top_dir>/ 下并发回本机磁盘。
+
+        每个文件按「先复制到本地、再删除手机原片」的顺序逐个处理；
+        本地目录会复刻手机相册路径（如 recycle/100APPLE/IMG_0100.JPG）。
+        返回成功处理的文件数；中途失败会向上抛异常（已完成的保留）。
+        """
+        n = 0
+        for filename in filenames:
+            photo = PhotoFile(filename=filename, folder=top_dir,
+                              remote_path=f"/DCIM/{top_dir}/{filename}")
+            raw = await self.importer.download_photo(photo)
+            target_dir = Path(dest_root) / dst_sub / top_dir
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / filename).write_bytes(raw)
+            await self.importer.remove_file(photo.remote_path)
+            n += 1
+            if on_progress:
+                on_progress(n, filename)
+        return n

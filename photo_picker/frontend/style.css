@@ -301,3 +301,51 @@ figcaption { padding: 8px; font-size: 0.78em; }
 .modal-box h3 { margin: 0 0 10px; }
 .modal-box p { margin: 0 0 18px; color: var(--text); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ---- 确认视图：输出目录 ---- */
+.dest-field { padding-bottom: 4px; margin-bottom: 18px; }
+.dest-row { display: flex; gap: 8px; }
+.dest-row input { flex: 1; }
+.dest-hint { margin: 4px 0 0; font-size: 0.8em; }
+
+/* ---- 目录浏览弹窗 ---- */
+.modal-box.wide { max-width: 560px; }
+.browse-path {
+  font-size: 0.9em;
+  word-break: break-all;
+  background: #f5f6f8;
+  padding: 6px 10px;
+  border-radius: 8px;
+  margin-bottom: 10px;
+}
+.browse-nav { display: flex; gap: 8px; margin-bottom: 10px; }
+.browse-list {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  margin-bottom: 12px;
+}
+.browse-list .muted { padding: 8px; }
+.browse-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  font-size: 0.92em;
+  cursor: pointer;
+}
+.browse-item:hover { background: #f0f2f5; }
+
+/* ---- 转移进度条 ---- */
+#transfer-fill {
+  height: 100%;
+  width: 0;
+  background: var(--keep-pc);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}

@@ -8,6 +8,8 @@
 import io
 import os
 import sys
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -30,6 +32,7 @@ class FakeImporter:
             "IMG_0001.HEIC": f"/DCIM/100APPLE/IMG_0001.HEIC",
             "IMG_0002.HEIC": f"/DCIM/100APPLE/IMG_0002.HEIC",
         }
+        self.removed = []
 
     async def list_photos(self, top_dir):
         return [SimpleNamespace(filename=f, folder=top_dir, remote_path=p)
@@ -37,6 +40,9 @@ class FakeImporter:
 
     async def download_photo(self, photo):
         return make_jpeg((120, 60, 240), size=(800, 600))
+
+    async def remove_file(self, remote_path):
+        self.removed.append(remote_path)
 
 
 class FakePicker:
@@ -67,6 +73,21 @@ class FakePicker:
         if return_items:
             return results, items
         return results
+
+    async def export_photos(self, top_dir, filenames, dest_root, dst_sub,
+                            on_progress=None):
+        """镜像真实 PhotoPicker.export_photos：复制→删除，写本地 moved/recycle。"""
+        for n, fn in enumerate(filenames, 1):
+            photo = SimpleNamespace(filename=fn, folder=top_dir,
+                                    remote_path=f"/DCIM/{top_dir}/{fn}")
+            raw = await self.importer.download_photo(photo)
+            target = Path(dest_root) / dst_sub / top_dir / fn
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+            await self.importer.remove_file(photo.remote_path)
+            if on_progress:
+                on_progress(n, fn)
+        return len(filenames)
 
 
 def setup_fake():
@@ -110,12 +131,40 @@ async def main():
     assert full.format == "JPEG"
     print("api_photo OK (full JPEG download)")
 
-    resp = await web.api_confirm(web.ConfirmRequest(
-        delete_ids=["IMG_0001.HEIC"], move_ids=["IMG_0002.HEIC"]))
-    assert resp == {"ok": True, "to_delete": 1, "to_move": 1}, resp
-    print("api_confirm OK (dummy log only)")
+    with tempfile.TemporaryDirectory() as tempdir:
+        resp = await web.api_confirm(web.ConfirmRequest(
+            delete_ids=["IMG_0001.HEIC"], move_ids=["IMG_0002.HEIC"],
+            dest=tempdir))
+        assert resp["started"] and resp["to_delete"] == 1 and resp["to_move"] == 1, resp
+        await web.session.job
+        tr = await web.api_transfer()
+        assert tr["running"] is False and not tr["error"], tr
+        assert tr["done"] == 2 == tr["total"], tr
+        assert (Path(tempdir) / "recycle").is_dir()
+        assert (Path(tempdir) / "moved").is_dir()
+        removed = web.session.picker.importer.removed
+        assert removed == ["/DCIM/100APPLE/IMG_0001.HEIC",
+                           "/DCIM/100APPLE/IMG_0002.HEIC"], removed
+        print("api_confirm OK (copy→delete background task + transfer status)")
 
-    print("ALL OK")
+        try:
+            await web.api_confirm(web.ConfirmRequest(delete_ids=[], dest="   "))
+            raise AssertionError("should reject empty dest")
+        except web.HTTPException as e:
+            assert e.status_code == 400
+        print("api_confirm OK (empty dest rejected)")
+
+        br = await web.api_browse(path=tempdir)
+        assert br["path"] == str(Path(tempdir).resolve()), br
+        assert "dirs" in br and "sep" in br, br
+        try:
+            await web.api_browse(path=str(Path(tempfile.gettempdir()) / "no_such_dir_xyz"))
+            raise AssertionError("should reject missing dir")
+        except web.HTTPException as e:
+            assert e.status_code == 400
+        print("api_browse OK (list dirs + bad path rejected)")
+
+        print("ALL OK")
 
 
 if __name__ == "__main__":

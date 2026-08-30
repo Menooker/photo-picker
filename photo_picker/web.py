@@ -1,11 +1,14 @@
-"""FastAPI Web 服务器：通过浏览器驱动照片分类流水线。
+"""FastAPI Web 服务器：通过浏览器驱动照片分类 + 删除 / 搬移到 PC。
 
-注意：删除 / 搬到 PC 的操作目前都是 Dummy 实现 —— 服务器只在终端打印日志，
-不会真正删除或搬运任何照片。
+「删除」= 把手机原片复制到本地磁盘 <输出目录>/recycle 后删掉手机上的原片；
+「转移 PC」= 复制到 <输出目录>/moved 后删掉手机上的原片。
+本地两个目录下会复刻手机相册路径（如 moved/100APPLE/IMG_0100.JPG），
+每个文件按「先复制、再删除」的顺序逐个处理。
 """
 import asyncio
 import base64
 import io
+import os
 import threading
 import traceback
 from pathlib import Path
@@ -45,6 +48,12 @@ class AppSession:
         self.usage_snapshot: dict = {
             "input_cached": 0, "input_uncached": 0, "output": 0, "input_total": 0,
         }
+        # 删除 / 转移状态（后台任务）
+        self.transfer: dict = {
+            "running": False, "error": "", "done": 0, "total": 0,
+            "phase": "", "current": "", "dest": "",
+            "to_delete": 0, "to_move": 0,
+        }
 
     async def ensure_connected(self):
         if not self.picker:
@@ -79,6 +88,7 @@ class ClassifyRequest(BaseModel):
 class ConfirmRequest(BaseModel):
     delete_ids: list[str] = []
     move_ids: list[str] = []
+    dest: str  # 本地输出根目录，会生成 moved / recycle 两个子文件夹
 
 
 def _item_meta(item, result=None) -> dict:
@@ -201,14 +211,87 @@ async def api_photo(photo_id: str):
 
 @app.post("/api/confirm")
 async def api_confirm(req: ConfirmRequest):
-    """确认环节：Dummy 实现，仅打印日志，不做真实操作。"""
-    for pid in req.delete_ids:
-        print(f"[DUMMY DELETE] {pid}")
-    for pid in req.move_ids:
-        print(f"[DUMMY MOVE PC] {pid}")
-    print(f"[DUMMY] 共 {len(req.delete_ids)} 张待删除, "
-          f"{len(req.move_ids)} 张待移至 PC")
-    return {"ok": True, "to_delete": len(req.delete_ids), "to_move": len(req.move_ids)}
+    """确认执行：先把照片复制到本地（recycle / moved），再删手机原片。
+
+    返回后立即启动后台任务（POST 不阻塞），用 GET /api/transfer 轮询进度。
+    """
+    with session._lock:
+        if session.transfer["running"]:
+            raise HTTPException(status_code=409, detail="已有删除/转移任务进行中")
+        dest = req.dest.strip().strip('"')
+        if not dest:
+            raise HTTPException(status_code=400, detail="请先选择输出目录")
+        dest = os.path.expanduser(dest)
+        for sub in ("moved", "recycle"):
+            try:
+                os.makedirs(os.path.join(dest, sub), exist_ok=True)
+            except OSError as e:
+                raise HTTPException(
+                    status_code=400, detail=f"无法在 {dest} 下创建 {sub} 目录: {e}")
+        session.transfer = {
+            "running": True, "error": "", "done": 0,
+            "total": len(req.delete_ids) + len(req.move_ids),
+            "phase": "", "current": "", "dest": dest,
+            "to_delete": len(req.delete_ids), "to_move": len(req.move_ids),
+        }
+        session.job = asyncio.create_task(_run_transfer(req, dest))
+    return {"started": True, "to_delete": len(req.delete_ids),
+            "to_move": len(req.move_ids), "dest": dest}
+
+
+async def _run_transfer(req: ConfirmRequest, dest: str):
+    """后台执行：先处理「删除」（recycle），再处理「转移到 PC」（moved）。"""
+    done = 0
+
+    def on_progress(_n: int, filename: str) -> None:
+        nonlocal done
+        done += 1
+        session.transfer["done"] = done
+        session.transfer["current"] = filename
+
+    try:
+        if session.transfer["to_delete"]:
+            session.transfer["phase"] = "recycle"
+            await session.picker.export_photos(
+                session.dir, req.delete_ids, dest, "recycle", on_progress=on_progress)
+        if session.transfer["to_move"]:
+            session.transfer["phase"] = "moved"
+            await session.picker.export_photos(
+                session.dir, req.move_ids, dest, "moved", on_progress=on_progress)
+    except Exception:
+        traceback.print_exc()
+        session.transfer["error"] = traceback.format_exc()
+    finally:
+        session.transfer["phase"] = ""
+        session.transfer["current"] = ""
+        session.transfer["running"] = False
+
+
+@app.get("/api/transfer")
+async def api_transfer():
+    """删除 / 转移后台任务状态（供轮询）。"""
+    return session.transfer
+
+
+@app.get("/api/browse")
+async def api_browse(path: str = ""):
+    """列出本地目录的子文件夹，供前端「浏览…」选择输出路径。path 为空用主目录。"""
+    try:
+        base = Path(os.path.expanduser(path or "~")).resolve()
+        if not base.is_dir():
+            raise HTTPException(status_code=400, detail=f"不是有效目录: {base}")
+        dirs = sorted(
+            (p.name for p in base.iterdir()
+             if p.is_dir() and not p.name.startswith(".")),
+            key=str.lower,
+        )
+    except HTTPException:
+        raise
+    except OSError as e:
+        raise _http_500(str(e))
+    parent = str(base.parent) if base.parent != base else ""
+    return {"path": str(base), "name": base.name or str(base),
+            "parent": parent, "dirs": dirs, "sep": os.sep}
 
 
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

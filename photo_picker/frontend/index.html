@@ -36,6 +36,14 @@
           <label for="count">数量（留空 = 全部）</label>
           <input id="count" type="number" min="0">
         </div>
+        <div class="field dest-field">
+          <label for="dest-path">输出目录（将生成 moved / recycle 两个子文件夹）</label>
+          <div class="dest-row">
+            <input id="dest-path" placeholder="如 D:\照片备份" autocomplete="off">
+            <button type="button" id="btn-browse" class="btn">浏览…</button>
+          </div>
+          <p class="muted dest-hint">删除的照片复制到 recycle、转移的照片复制到 moved；本地会复刻手机相册路径，如 moved\100APPLE\IMG_0100.JPG</p>
+        </div>
         <button type="submit" id="btn-start" class="btn primary">开始分类</button>
       </form>
       <div id="progress-wrap" class="progress-wrap" hidden>
@@ -74,8 +82,8 @@
       <div class="bar">
         <div>
           <h2 id="confirm-title"></h2>
-          <p class="muted">以下照片将被删除 / 移到 PC。<b>当前为演示阶段</b>，操作仅在服务器终端打印日志。
-              点击缩略图可回到该照片所在的审查页。</p>
+          <p class="muted">删除的照片会复制到 <b>recycle</b>、转移的照片会复制到 <b>moved</b>，
+             随后删除手机上的原片。点击缩略图可回到该照片所在的审查页。</p>
         </div>
       </div>
       <div class="confirm-cols">
@@ -89,6 +97,10 @@
           <div id="confirm-move" class="grid small"></div>
           <p id="move-empty" class="muted">无</p>
         </div>
+      </div>
+      <div id="transfer-wrap" class="progress-wrap" hidden>
+        <div class="progress-bar"><div id="transfer-fill"></div></div>
+        <p id="transfer-text" class="muted">准备转移…</p>
       </div>
       <div class="btn-group center">
         <button id="btn-back-review" class="btn">返回审查</button>
@@ -110,6 +122,24 @@
       <div class="info-row"><dt>位置</dt><dd id="lb-loc"></dd></div>
       <div class="info-row"><dt>LLM 标签</dt><dd><span id="lb-badge" class="badge"></span> <span id="lb-conf" class="muted"></span></dd></div>
       <div class="info-row"><dt>原因</dt><dd id="lb-reason"></dd></div>
+    </div>
+  </div>
+</div>
+
+<!-- 输出目录浏览 -->
+<div id="dir-browser" class="modal" hidden>
+  <div class="modal-box wide">
+    <h3>选择输出目录</h3>
+    <p id="browse-path" class="muted browse-path"></p>
+    <div class="browse-nav">
+      <button id="browse-up" class="btn">↑ 上一级</button>
+      <button id="browse-home" class="btn">🏠 主目录</button>
+    </div>
+    <div id="browse-list" class="browse-list"></div>
+    <p id="browse-error" class="error"></p>
+    <div class="modal-actions">
+      <button id="browse-cancel" class="btn">取消</button>
+      <button id="browse-confirm" class="btn primary">使用此路径</button>
     </div>
   </div>
 </div>
