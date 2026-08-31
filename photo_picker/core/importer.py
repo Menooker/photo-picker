@@ -1,4 +1,3 @@
-import asyncio
 from dataclasses import dataclass
 
 from pymobiledevice3.usbmux import list_devices
@@ -62,6 +61,8 @@ class IPhoneImporter:
 
     async def remove_file(self, remote_path: str) -> None:
         """删除手机上的单个文件。删除失败时抛 RuntimeError。"""
-        removed = await self._afc.rm_single(remote_path, force=True)
-        if not removed:
-            raise RuntimeError(f"无法删除手机文件: {remote_path}")
+        try:
+            # rm_single 成功时返回 None，失败时由 AFC 抛出异常；force 只属于 rm。
+            await self._afc.rm_single(remote_path)
+        except Exception as exc:
+            raise RuntimeError(f"无法删除手机文件: {remote_path}") from exc

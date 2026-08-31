@@ -10,6 +10,55 @@ from .models import PhotoItem, PhotoResult
 LLM_GROUP_MAX = 30
 LLM_QUEUE_MAX = 90  # LLM 队列中待处理照片数上限（= 3 个 batch）
 LLM_WORKERS = 1
+FILE_COMPARE_CHUNK_SIZE = 1024 * 1024
+
+
+def _file_matches(path: Path, expected: bytes) -> bool:
+    """逐字节确认现有普通文件是否与 expected 完全一致。"""
+    try:
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_size != len(expected)
+        ):
+            return False
+        offset = 0
+        with path.open("rb") as src:
+            while chunk := src.read(FILE_COMPARE_CHUNK_SIZE):
+                end = offset + len(chunk)
+                if chunk != expected[offset:end]:
+                    return False
+                offset = end
+        return offset == len(expected)
+    except FileNotFoundError:
+        # 文件可能在排他创建失败后被外部移除；按不匹配处理即可。
+        return False
+
+
+def _numbered_target(target: Path, n: int) -> Path:
+    return target.with_name(f"{target.stem} ({n}){target.suffix}")
+
+
+def _write_backup(target: Path, raw: bytes) -> Path:
+    """不覆盖地写入备份；相同内容复用，不同内容依次尝试 (N)。"""
+    n = 0
+    while True:
+        candidate = target if n == 0 else _numbered_target(target, n)
+        try:
+            # 排他创建避免 exists() 与 write() 之间的覆盖竞态。
+            with candidate.open("xb") as dst:
+                written = dst.write(raw)
+                if written != len(raw):
+                    raise OSError(
+                        f"备份写入不完整: {candidate} ({written}/{len(raw)} bytes)"
+                    )
+        except FileExistsError:
+            if _file_matches(candidate, raw):
+                return candidate
+            n += 1
+            continue
+
+        return candidate
 
 
 def _process_photo(raw: bytes, filename: str) -> PhotoItem:
@@ -68,7 +117,7 @@ class PhotoPicker:
 
     async def list_dirs(self) -> list[str]:
         dirs = await self.importer.list_dcim_dirs()
-        print(f"DCIM directories:")
+        print("DCIM directories:")
         for d in dirs:
             print(f"  {d}")
         return dirs
@@ -163,7 +212,7 @@ class PhotoPicker:
             llm_futures.append(await acquire_and_submit(batch_buffer))
 
         # 收集 LLM 结果（任务已在后台完成，这里只取回结果）
-        print(f"Download complete. Classifying...")
+        print("Download complete. Classifying...")
         results: list[PhotoResult] = []
         for fut in llm_futures:
             results.extend(await fut)
@@ -206,7 +255,7 @@ class PhotoPicker:
             raw = await self.importer.download_photo(photo)
             target_dir = Path(dest_root) / dst_sub / top_dir
             target_dir.mkdir(parents=True, exist_ok=True)
-            (target_dir / filename).write_bytes(raw)
+            _write_backup(target_dir / filename, raw)
             await self.importer.remove_file(photo.remote_path)
             n += 1
             if on_progress:

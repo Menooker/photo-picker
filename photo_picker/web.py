@@ -9,15 +9,15 @@ import asyncio
 import base64
 import io
 import os
-import threading
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .core.picker import PhotoPicker
 
@@ -32,7 +32,7 @@ class AppSession:
     """保存一次分类任务在服务器端复用的数据（含缩略图）。"""
 
     def __init__(self, max_thinking_tokens: int = 10000):
-        self._lock = threading.Lock()
+        self._lock = asyncio.Lock()
         self.picker: PhotoPicker | None = None
         self.connected = False
         self.dir = ""              # 本次任务的 DCIM 子目录
@@ -48,11 +48,10 @@ class AppSession:
         self.usage_snapshot: dict = {
             "input_cached": 0, "input_uncached": 0, "output": 0, "input_total": 0,
         }
-        # 删除 / 转移状态（后台任务）
-        self.transfer: dict = {
+        # 删除 / 转移后台任务的运行状态（不保存传输目标）
+        self.transfer_status: dict = {
             "running": False, "error": "", "done": 0, "total": 0,
-            "phase": "", "current": "", "dest": "",
-            "to_delete": 0, "to_move": 0,
+            "phase": "", "current": "",
         }
 
     async def ensure_connected(self):
@@ -86,9 +85,43 @@ class ClassifyRequest(BaseModel):
 
 
 class ConfirmRequest(BaseModel):
-    delete_ids: list[str] = []
-    move_ids: list[str] = []
+    iphone_dir: str
+    delete_ids: list[str] = Field(default_factory=list)
+    move_ids: list[str] = Field(default_factory=list)
     dest: str  # 本地输出根目录，会生成 moved / recycle 两个子文件夹
+
+
+@dataclass(frozen=True)
+class TransferPlan:
+    """确认时固定的传输参数，后台任务不得再读取 session.dir。"""
+
+    iphone_dir: str
+    delete_ids: tuple[str, ...]
+    move_ids: tuple[str, ...]
+    dest: str
+
+
+def _is_plain_component(value: str) -> bool:
+    """只允许一个目录项，禁止把客户端值当成相对路径拼接。"""
+    return bool(value) and value not in (".", "..") and not any(
+        char in value for char in ("/", "\\", "\x00")
+    )
+
+
+async def _remote_photos_by_name(iphone_dir: str) -> dict[str, object]:
+    """验证 DCIM 子目录并返回其中当前可见的照片。"""
+    if not _is_plain_component(iphone_dir):
+        raise HTTPException(status_code=400, detail="iPhone 照片目录无效")
+
+    dirs = await session.picker.importer.list_dcim_dirs()
+    if iphone_dir not in dirs:
+        raise HTTPException(
+            status_code=400, detail=f"iPhone 照片目录不存在: {iphone_dir}"
+        )
+    return {
+        photo.filename: photo
+        for photo in await session.picker.importer.list_photos(iphone_dir)
+    }
 
 
 def _item_meta(item, result=None) -> dict:
@@ -117,13 +150,15 @@ async def api_dirs():
 
 @app.post("/api/classify")
 async def api_classify(req: ClassifyRequest):
-    with session._lock:
+    async with session._lock:
+        if session.running:
+            raise HTTPException(status_code=409, detail="已有分类任务进行中")
+        if session.transfer_status["running"]:
+            raise HTTPException(status_code=409, detail="删除/转移任务进行中")
         try:
             await session.ensure_connected()
         except Exception as e:
             raise _http_500(str(e))
-        if session.running:
-            raise HTTPException(status_code=409, detail="已有任务进行中")
         session.running = True
         session.error = ""
         session.progress = {"done": 0, "total": 0}
@@ -186,14 +221,18 @@ async def api_thumbs(ids: list[str] = Query(default=[])):
 
 
 @app.get("/api/photo/{photo_id}")
-async def api_photo(photo_id: str):
+async def api_photo(photo_id: str, iphone_dir: str = Query(...)):
     """放大查看：从手机重新下载原图并转 JPEG 返回。"""
     try:
         await session.ensure_connected()
-        files = await session.picker.importer.list_photos(session.dir)
-        photo = next((f for f in files if f.filename == photo_id), None)
+        if not _is_plain_component(photo_id):
+            raise HTTPException(status_code=400, detail="照片文件名无效")
+        photos = await _remote_photos_by_name(iphone_dir.strip())
+        photo = photos.get(photo_id)
         if photo is None:
-            raise HTTPException(status_code=404, detail=f"{photo_id} not found")
+            raise HTTPException(
+                status_code=404, detail=f"{iphone_dir}/{photo_id} not found"
+            )
         raw = await session.picker.importer.download_photo(photo)
     except HTTPException:
         raise
@@ -215,62 +254,109 @@ async def api_confirm(req: ConfirmRequest):
 
     返回后立即启动后台任务（POST 不阻塞），用 GET /api/transfer 轮询进度。
     """
-    with session._lock:
-        if session.transfer["running"]:
+    async with session._lock:
+        if session.transfer_status["running"]:
             raise HTTPException(status_code=409, detail="已有删除/转移任务进行中")
+        if session.running:
+            raise HTTPException(status_code=409, detail="分类任务进行中")
+
         dest = req.dest.strip().strip('"')
         if not dest:
             raise HTTPException(status_code=400, detail="请先选择输出目录")
-        dest = os.path.expanduser(dest)
+        dest = str(Path(os.path.expanduser(dest)).resolve())
+
+        iphone_dir = req.iphone_dir.strip()
+        delete_ids = tuple(req.delete_ids)
+        move_ids = tuple(req.move_ids)
+        if len(delete_ids) != len(set(delete_ids)):
+            raise HTTPException(status_code=400, detail="删除列表包含重复文件")
+        if len(move_ids) != len(set(move_ids)):
+            raise HTTPException(status_code=400, detail="转移列表包含重复文件")
+        overlap = set(delete_ids) & set(move_ids)
+        if overlap:
+            raise HTTPException(
+                status_code=400,
+                detail=f"同一文件不能同时删除和转移: {sorted(overlap)[0]}",
+            )
+        invalid = next(
+            (name for name in (*delete_ids, *move_ids)
+             if not _is_plain_component(name)),
+            None,
+        )
+        if invalid is not None:
+            raise HTTPException(status_code=400, detail=f"照片文件名无效: {invalid}")
+
+        try:
+            await session.ensure_connected()
+            remote_photos = await _remote_photos_by_name(iphone_dir)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise _http_500(str(e))
+        missing = (set(delete_ids) | set(move_ids)) - set(remote_photos)
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"照片不在 iPhone 目录 {iphone_dir} 中: {sorted(missing)[0]}",
+            )
+
         for sub in ("moved", "recycle"):
             try:
                 os.makedirs(os.path.join(dest, sub), exist_ok=True)
             except OSError as e:
                 raise HTTPException(
                     status_code=400, detail=f"无法在 {dest} 下创建 {sub} 目录: {e}")
-        session.transfer = {
+        plan = TransferPlan(
+            iphone_dir=iphone_dir,
+            delete_ids=delete_ids,
+            move_ids=move_ids,
+            dest=dest,
+        )
+        session.transfer_status = {
             "running": True, "error": "", "done": 0,
-            "total": len(req.delete_ids) + len(req.move_ids),
-            "phase": "", "current": "", "dest": dest,
-            "to_delete": len(req.delete_ids), "to_move": len(req.move_ids),
+            "total": len(delete_ids) + len(move_ids),
+            "phase": "", "current": "",
         }
-        session.job = asyncio.create_task(_run_transfer(req, dest))
-    return {"started": True, "to_delete": len(req.delete_ids),
-            "to_move": len(req.move_ids), "dest": dest}
+        session.job = asyncio.create_task(_run_transfer(plan))
+    return {"started": True, "to_delete": len(delete_ids),
+            "to_move": len(move_ids), "dest": dest,
+            "iphone_dir": iphone_dir}
 
 
-async def _run_transfer(req: ConfirmRequest, dest: str):
+async def _run_transfer(plan: TransferPlan):
     """后台执行：先处理「删除」（recycle），再处理「转移到 PC」（moved）。"""
     done = 0
 
     def on_progress(_n: int, filename: str) -> None:
         nonlocal done
         done += 1
-        session.transfer["done"] = done
-        session.transfer["current"] = filename
+        session.transfer_status["done"] = done
+        session.transfer_status["current"] = filename
 
     try:
-        if session.transfer["to_delete"]:
-            session.transfer["phase"] = "recycle"
+        if plan.delete_ids:
+            session.transfer_status["phase"] = "recycle"
             await session.picker.export_photos(
-                session.dir, req.delete_ids, dest, "recycle", on_progress=on_progress)
-        if session.transfer["to_move"]:
-            session.transfer["phase"] = "moved"
+                plan.iphone_dir, plan.delete_ids, plan.dest, "recycle",
+                on_progress=on_progress)
+        if plan.move_ids:
+            session.transfer_status["phase"] = "moved"
             await session.picker.export_photos(
-                session.dir, req.move_ids, dest, "moved", on_progress=on_progress)
+                plan.iphone_dir, plan.move_ids, plan.dest, "moved",
+                on_progress=on_progress)
     except Exception:
         traceback.print_exc()
-        session.transfer["error"] = traceback.format_exc()
+        session.transfer_status["error"] = traceback.format_exc()
     finally:
-        session.transfer["phase"] = ""
-        session.transfer["current"] = ""
-        session.transfer["running"] = False
+        session.transfer_status["phase"] = ""
+        session.transfer_status["current"] = ""
+        session.transfer_status["running"] = False
 
 
 @app.get("/api/transfer")
 async def api_transfer():
     """删除 / 转移后台任务状态（供轮询）。"""
-    return session.transfer
+    return session.transfer_status
 
 
 @app.get("/api/browse")

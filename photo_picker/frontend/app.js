@@ -388,7 +388,12 @@ async function execConfirm() {
     const data = await fetchJSON("/api/confirm", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ delete_ids: delIds, move_ids: moveIds, dest: state.dest }),
+      body: JSON.stringify({
+        iphone_dir: state.dir,
+        delete_ids: delIds,
+        move_ids: moveIds,
+        dest: state.dest,
+      }),
     });
     await pollTransfer(data.to_delete + data.to_move);
     $("modal").hidden = true;
@@ -465,7 +470,9 @@ async function openLightbox(id) {
   $("lightbox-img").alt = id;
   $("lightbox-img").src = "";
   try {
-    const res = await fetch(`/api/photo/${encodeURIComponent(id)}`);
+    const res = await fetch(
+      `/api/photo/${encodeURIComponent(id)}?iphone_dir=${encodeURIComponent(state.dir)}`
+    );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     $("lightbox-img").src = URL.createObjectURL(await res.blob());
   } catch (err) {

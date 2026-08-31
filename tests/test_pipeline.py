@@ -143,6 +143,38 @@ class ExportImporter:
         self.removed.append(remote_path)
 
 
+class FakeAfc:
+    def __init__(self, error=None):
+        self.calls = []
+        self.error = error
+
+    async def rm_single(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        if self.error:
+            raise self.error
+        return None
+
+
+async def test_afc_remove_contract():
+    """rm_single 只接收路径，成功返回 None，失败通过异常报告。"""
+    importer = core_picker.IPhoneImporter()
+    afc = FakeAfc()
+    importer._afc = afc
+    path = "/DCIM/100APPLE/IMG_0001.HEIC"
+    await importer.remove_file(path)
+    assert afc.calls == [((path,), {})]
+
+    failure = OSError("AFC failed")
+    importer._afc = FakeAfc(error=failure)
+    try:
+        await importer.remove_file(path)
+        raise AssertionError("remove_file should propagate AFC failure")
+    except RuntimeError as exc:
+        assert path in str(exc)
+        assert exc.__cause__ is failure
+    print("test_afc_remove_contract OK")
+
+
 async def test_export_copy_then_delete():
     """export_photos：先复制到本地、再删除手机原片；目录复刻相册路径。"""
     imp = ExportImporter("100APPLE")
@@ -172,11 +204,52 @@ async def test_export_copy_then_delete():
     print("test_export_copy_then_delete OK")
 
 
+async def test_export_never_overwrites_backup():
+    """同内容复用；不同内容从 (1) 起寻找未占用或内容相同的名称。"""
+    imp = ExportImporter("100APPLE")
+    p = SimpleNamespace(importer=imp)
+    with tempfile.TemporaryDirectory() as d:
+        target_dir = Path(d) / "recycle" / "100APPLE"
+        target_dir.mkdir(parents=True)
+
+        same = target_dir / "IMG_0001.HEIC"
+        same.write_bytes(imp.bytes_by["IMG_0001.HEIC"])
+        await core_picker.PhotoPicker.export_photos(
+            p, "100APPLE", ["IMG_0001.HEIC"], d, "recycle")
+        assert same.read_bytes() == imp.bytes_by["IMG_0001.HEIC"]
+        assert not (target_dir / "IMG_0001 (1).HEIC").exists()
+
+        base = target_dir / "IMG_0002.JPG"
+        first = target_dir / "IMG_0002 (1).JPG"
+        base.write_bytes(b"older-photo")
+        first.write_bytes(b"another-photo")
+        await core_picker.PhotoPicker.export_photos(
+            p, "100APPLE", ["IMG_0002.JPG"], d, "recycle")
+        assert base.read_bytes() == b"older-photo"
+        assert first.read_bytes() == b"another-photo"
+        assert (target_dir / "IMG_0002 (2).JPG").read_bytes() == imp.bytes_by[
+            "IMG_0002.JPG"
+        ]
+
+        # AFC 删除失败后的重试会找到刚写好的 (2)，不会再制造 (3)。
+        await core_picker.PhotoPicker.export_photos(
+            p, "100APPLE", ["IMG_0002.JPG"], d, "recycle")
+        assert not (target_dir / "IMG_0002 (3).JPG").exists()
+        assert imp.removed == [
+            "/DCIM/100APPLE/IMG_0001.HEIC",
+            "/DCIM/100APPLE/IMG_0002.JPG",
+            "/DCIM/100APPLE/IMG_0002.JPG",
+        ]
+    print("test_export_never_overwrites_backup OK")
+
+
 async def main():
     await test_batch_sizes_and_order()
     await test_backpressure()
     await test_tail_batch_submitted()
+    await test_afc_remove_contract()
     await test_export_copy_then_delete()
+    await test_export_never_overwrites_backup()
     print("ALL OK")
 
 

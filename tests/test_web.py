@@ -29,10 +29,13 @@ def make_jpeg(color: tuple[int, int, int], size=(320, 240)) -> bytes:
 class FakeImporter:
     def __init__(self):
         self.photo_files = {
-            "IMG_0001.HEIC": f"/DCIM/100APPLE/IMG_0001.HEIC",
-            "IMG_0002.HEIC": f"/DCIM/100APPLE/IMG_0002.HEIC",
+            "IMG_0001.HEIC": "/DCIM/100APPLE/IMG_0001.HEIC",
+            "IMG_0002.HEIC": "/DCIM/100APPLE/IMG_0002.HEIC",
         }
         self.removed = []
+
+    async def list_dcim_dirs(self):
+        return ["100APPLE", "100CLOUD"]
 
     async def list_photos(self, top_dir):
         return [SimpleNamespace(filename=f, folder=top_dir, remote_path=p)
@@ -49,6 +52,7 @@ class FakePicker:
     def __init__(self):
         self.importer = FakeImporter()
         self.usage = TokenUsage()
+        self.export_calls = []
 
     async def connect(self):
         pass
@@ -77,6 +81,7 @@ class FakePicker:
     async def export_photos(self, top_dir, filenames, dest_root, dst_sub,
                             on_progress=None):
         """镜像真实 PhotoPicker.export_photos：复制→删除，写本地 moved/recycle。"""
+        self.export_calls.append((top_dir, tuple(filenames), dst_sub))
         for n, fn in enumerate(filenames, 1):
             photo = SimpleNamespace(filename=fn, folder=top_dir,
                                     remote_path=f"/DCIM/{top_dir}/{fn}")
@@ -91,6 +96,7 @@ class FakePicker:
 
 
 def setup_fake():
+    web.session = web.AppSession()
     web.session.picker = FakePicker()
     web.session.connected = True
 
@@ -126,33 +132,80 @@ async def main():
     assert thumb.format == "JPEG"
     print("api_thumbs OK (base64 JPEG, missing ids ignored)")
 
-    resp = await web.api_photo("IMG_0001.HEIC")
+    resp = await web.api_photo("IMG_0001.HEIC", iphone_dir="100APPLE")
     full = Image.open(io.BytesIO(resp.body))
     assert full.format == "JPEG"
     print("api_photo OK (full JPEG download)")
 
     with tempfile.TemporaryDirectory() as tempdir:
         resp = await web.api_confirm(web.ConfirmRequest(
+            iphone_dir="100APPLE",
             delete_ids=["IMG_0001.HEIC"], move_ids=["IMG_0002.HEIC"],
             dest=tempdir))
+        # 后台任务只能使用请求中固定的目录，不能再读取可变 session.dir。
+        web.session.dir = "100CLOUD"
         assert resp["started"] and resp["to_delete"] == 1 and resp["to_move"] == 1, resp
         await web.session.job
         tr = await web.api_transfer()
         assert tr["running"] is False and not tr["error"], tr
         assert tr["done"] == 2 == tr["total"], tr
+        assert set(tr) == {"running", "error", "done", "total", "phase", "current"}
         assert (Path(tempdir) / "recycle").is_dir()
         assert (Path(tempdir) / "moved").is_dir()
         removed = web.session.picker.importer.removed
         assert removed == ["/DCIM/100APPLE/IMG_0001.HEIC",
                            "/DCIM/100APPLE/IMG_0002.HEIC"], removed
+        assert web.session.picker.export_calls == [
+            ("100APPLE", ("IMG_0001.HEIC",), "recycle"),
+            ("100APPLE", ("IMG_0002.HEIC",), "moved"),
+        ]
         print("api_confirm OK (copy→delete background task + transfer status)")
 
         try:
-            await web.api_confirm(web.ConfirmRequest(delete_ids=[], dest="   "))
+            await web.api_confirm(web.ConfirmRequest(
+                iphone_dir="100APPLE", delete_ids=[], dest="   "))
             raise AssertionError("should reject empty dest")
         except web.HTTPException as e:
             assert e.status_code == 400
         print("api_confirm OK (empty dest rejected)")
+
+        try:
+            await web.api_confirm(web.ConfirmRequest(
+                iphone_dir="100APPLE", delete_ids=["../IMG_0001.HEIC"],
+                dest=tempdir))
+            raise AssertionError("should reject path-like filename")
+        except web.HTTPException as e:
+            assert e.status_code == 400
+
+        try:
+            await web.api_confirm(web.ConfirmRequest(
+                iphone_dir="100CLOUD", delete_ids=["IMG_0001.HEIC"],
+                dest=tempdir))
+            raise AssertionError("should reject a file outside the requested dir")
+        except web.HTTPException as e:
+            assert e.status_code == 400
+        print("api_confirm OK (remote dir/file validation)")
+
+        web.session.running = True
+        try:
+            await web.api_confirm(web.ConfirmRequest(
+                iphone_dir="100APPLE", delete_ids=["IMG_0001.HEIC"],
+                dest=tempdir))
+            raise AssertionError("confirm should be blocked while classifying")
+        except web.HTTPException as e:
+            assert e.status_code == 409
+        finally:
+            web.session.running = False
+
+        web.session.transfer_status["running"] = True
+        try:
+            await web.api_classify(web.ClassifyRequest(dir="100APPLE"))
+            raise AssertionError("classify should be blocked while transferring")
+        except web.HTTPException as e:
+            assert e.status_code == 409
+        finally:
+            web.session.transfer_status["running"] = False
+        print("classification/transfer mutual exclusion OK")
 
         br = await web.api_browse(path=tempdir)
         assert br["path"] == str(Path(tempdir).resolve()), br
