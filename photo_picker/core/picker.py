@@ -7,8 +7,8 @@ from .thumbnail import parse_metadata, make_thumbnail
 from .llm_client import LLMClient, TokenUsage
 from .models import PhotoItem, PhotoResult
 
-LLM_GROUP_MAX = 30
-LLM_QUEUE_MAX = 90  # LLM 队列中待处理照片数上限（= 3 个 batch）
+LLM_GROUP_MAX = 25
+LLM_QUEUE_MAX = 75  # LLM 队列中待处理照片数上限（= 3 个 batch）
 LLM_WORKERS = 1
 FILE_COMPARE_CHUNK_SIZE = 1024 * 1024
 

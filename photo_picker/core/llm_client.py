@@ -113,7 +113,7 @@ class LLMClient:
                 return validated.results
             except ResponseValidationError as e:
                 error_msg = f"上一次回复验证失败：{e.message}\n请严格按 JSON Schema 重新输出。"
-
+                print(f"    Warning: validation failed on attempt {attempt + 1}: {e.message}")
                 messages.append({"role": "assistant", "content": content})
                 messages.append({"role": "system", "content": error_msg})
 

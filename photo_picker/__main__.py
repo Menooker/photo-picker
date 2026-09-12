@@ -32,7 +32,7 @@ def main():
     p_serve.add_argument("--port", type=int, default=8000, help="监听端口")
     p_serve.add_argument("--llm-url", default="http://localhost:8080/v1", help="LLM API 地址")
     p_serve.add_argument("--llm-model", default="default", help="模型名称")
-    p_serve.add_argument("--max-thinking-tokens", type=int, default=5000,
+    p_serve.add_argument("--max-thinking-tokens", type=int, default=4000,
                          help="llama.cpp thinking token 预算（-1 不限，0 关闭思考）")
 
     args = parser.parse_args()
