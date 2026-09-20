@@ -1,5 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 from .importer import IPhoneImporter, PhotoFile
@@ -11,6 +12,19 @@ LLM_GROUP_MAX = 25
 LLM_QUEUE_MAX = 75  # LLM 队列中待处理照片数上限（= 3 个 batch）
 LLM_WORKERS = 1
 FILE_COMPARE_CHUNK_SIZE = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class ExportEntry:
+    """单个待导出文件：本地目标子路径与是否删除手机原片。
+
+    sub_path 为空时由 export_photos 的 dst_sub 决定（如 recycle / moved）；
+    keep_phone=True 表示「同时保留到手机和 PC」：复制到 PC 但删除手机原片。
+    """
+
+    filename: str
+    sub_path: str = ""        # 相对 dest_root 的子路径（如 "recycle"、"named/旅行"）
+    keep_phone: bool = False  # 只复制不到删除：保留手机原片 + 保存 PC 副本
 
 
 def _file_matches(path: Path, expected: bytes) -> bool:
@@ -239,25 +253,28 @@ class PhotoPicker:
 
         return (results, items) if return_items else results
 
-    async def export_photos(self, top_dir: str, filenames: list[str],
-                            dest_root: str, dst_sub: str,
+    async def export_photos(self, top_dir: str, entries: list[ExportEntry],
+                            dest_root: str, dst_sub: str = "",
                             on_progress=None) -> int:
-        """把手机照片搬出到 <dest_root>/<dst_sub>/<top_dir>/ 下并发回本机磁盘。
+        """把手机照片导出到 <dest_root>/<sub_path>/<top_dir>/ 下并发回本机磁盘。
 
-        每个文件按「先复制到本地、再删除手机原片」的顺序逐个处理；
-        本地目录会复刻手机相册路径（如 recycle/100APPLE/IMG_0100.JPG）。
+        每个 ExportEntry 指定本地目标子路径（sub_path 为空则归入 dst_sub）与
+        是否删除手机原片（keep_phone=True 时只复制、不删除，用于「同时保留到
+        手机和 PC」）。本地目录会复刻手机相册路径（如 recycle/100APPLE/IMG_0100.JPG）。
         返回成功处理的文件数；中途失败会向上抛异常（已完成的保留）。
         """
         n = 0
-        for filename in filenames:
-            photo = PhotoFile(filename=filename, folder=top_dir,
-                              remote_path=f"/DCIM/{top_dir}/{filename}")
+        for entry in entries:
+            photo = PhotoFile(filename=entry.filename, folder=top_dir,
+                              remote_path=f"/DCIM/{top_dir}/{entry.filename}")
             raw = await self.importer.download_photo(photo)
-            target_dir = Path(dest_root) / dst_sub / top_dir
+            sub_path = entry.sub_path or dst_sub
+            target_dir = Path(dest_root) / sub_path / top_dir
             target_dir.mkdir(parents=True, exist_ok=True)
-            _write_backup(target_dir / filename, raw)
-            await self.importer.remove_file(photo.remote_path)
+            _write_backup(target_dir / entry.filename, raw)
+            if not entry.keep_phone:
+                await self.importer.remove_file(photo.remote_path)
             n += 1
             if on_progress:
-                on_progress(n, filename)
+                on_progress(n, entry.filename)
         return n

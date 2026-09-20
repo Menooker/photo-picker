@@ -67,6 +67,17 @@
           <button id="btn-review-done" class="btn primary">审查完毕</button>
         </div>
       </div>
+      <div id="review-tools" class="review-tools">
+        <div class="named-row">
+          <span class="muted">命名文件夹（位于 <b id="named-dest-path" class="muted"></b>named/ 下）：</span>
+        </div>
+        <div class="named-row">
+          <input id="named-new" placeholder="新建文件夹名" maxlength="64" autocomplete="off">
+          <button id="btn-named-mkdir" type="button" class="btn">新建</button>
+          <span id="named-msg" class="muted"></span>
+        </div>
+        <p class="muted named-hint">KEEP_PC（移到 PC）的照片可在点开大图后选择输出到某个命名文件夹；默认“(自动)”输出到 moved。</p>
+      </div>
       <div id="review-grid" class="grid"></div>
       <div class="pager">
         <button id="prev-page" class="btn">‹ 上一页</button>
@@ -82,8 +93,9 @@
       <div class="bar">
         <div>
           <h2 id="confirm-title"></h2>
-          <p class="muted">删除的照片会复制到 <b>recycle</b>、转移的照片会复制到 <b>moved</b>，
-             随后删除手机上的原片。点击缩略图可回到该照片所在的审查页。</p>
+          <p class="muted">删除的照片会复制到 <b>recycle</b>；转移的照片会复制到 <b>moved</b>
+          （或点开大图时选择的 <b>named/对应文件夹</b>）。随后删除手机上的原片；勾选“同时保留手机原片”的照片只复制、不删除。
+          点击缩略图可回到该照片所在的审查页。</p>
         </div>
       </div>
       <div class="confirm-cols">
@@ -122,6 +134,16 @@
       <div class="info-row"><dt>位置</dt><dd id="lb-loc"></dd></div>
       <div class="info-row"><dt>LLM 标签</dt><dd><span id="lb-badge" class="badge"></span> <span id="lb-conf" class="muted"></span></dd></div>
       <div class="info-row"><dt>原因</dt><dd id="lb-reason"></dd></div>
+      <div id="lb-move-options" hidden>
+        <div class="info-row">
+          <dt>输出到</dt>
+          <dd><select id="lb-named"></select></dd>
+        </div>
+        <div class="info-row">
+          <dt>保留方式</dt>
+          <dd><label class="check-label"><input type="checkbox" id="lb-keep-phone"> 同时保留手机原片（复制到 PC 但不删除手机）</label></dd>
+        </div>
+      </div>
     </div>
   </div>
 </div>

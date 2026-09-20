@@ -1,6 +1,6 @@
 // Photo Picker 前端（无框架，原生 JS）
 
-const PER_PAGE = 15;
+const PER_PAGE = 18;
 
 const LABELS = [
   { value: "KEEP_PHONE", key: "保留手机", cls: "keep-phone" },
@@ -15,6 +15,11 @@ const state = {
   labels: new Map(),    // id -> 当前标签（可修改）
   page: 0,
   dest: localStorage.getItem("picker.dest") || "",  // 输出目录（持久化）
+  namedDirs: [],        // <dest>/named/ 下的子文件夹名清单
+  namedLoadedFor: "",   // 已加载 namedDirs 时的 dest（避免每页重复请求）
+  namedDir: new Map(),  // id -> 选中的命名子文件夹（"" = 自动 → moved/）
+  keepPhone: new Map(), // id -> 是否同时保留手机原片
+  lightboxId: "",       // 当前放大查看的照片 id
 };
 
 const $ = (id) => document.getElementById(id);
@@ -152,6 +157,71 @@ async function fetchThumbs(ids) {
   return (await fetchJSON("/api/thumbs?" + qs)).thumbs;
 }
 
+// ---------- 输出目录 named 子文件夹 ----------
+async function loadNamedDirs() {
+  if (!state.dest) return;
+  try {
+    const d = await fetchJSON("/api/named/dirs?dest=" + encodeURIComponent(state.dest));
+    state.namedDirs = d.dirs;
+    if (!$("lightbox").hidden && state.lightboxId) {
+      renderLightboxNamed(state.lightboxId);
+    }
+  } catch (_) { /* 服务器未就绪 / 目录未填写时忽略 */ }
+}
+
+function ensureNamedDirs() {
+  if (state.namedLoadedFor === state.dest) return;
+  state.namedLoadedFor = state.dest;
+  $("named-dest-path").textContent = state.dest || "（未填写）";
+  loadNamedDirs();
+}
+
+function renderLightboxNamed(id) {
+  const sel = $("lb-named");
+  sel.innerHTML = "";
+  const auto = document.createElement("option");
+  auto.value = "";
+  auto.textContent = "(自动)";
+  sel.appendChild(auto);
+  for (const name of state.namedDirs) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  }
+  sel.value = state.namedDir.get(id) || "";
+  $("lb-keep-phone").checked = !!state.keepPhone.get(id);
+}
+
+async function createNamedDir() {
+  const input = $("named-new");
+  const name = input.value.trim();
+  $("named-msg").textContent = "";
+  if (!state.dest) {
+    $("named-msg").textContent = "请先在设置页填写输出目录。";
+    return;
+  }
+  if (!name) {
+    $("named-msg").textContent = "请输入文件夹名。";
+    return;
+  }
+  try {
+    const d = await fetchJSON("/api/named/mkdir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dest: state.dest, name }),
+    });
+    state.namedDirs = d.dirs;
+    state.namedLoadedFor = state.dest;
+    input.value = "";
+    if (!$("lightbox").hidden && state.lightboxId) {
+      renderLightboxNamed(state.lightboxId);
+    }
+  } catch (err) {
+    $("named-msg").textContent = `创建失败：${err.message}`;
+  }
+}
+
 // ---------- 审查视图 ----------
 function pageItems() {
   const start = state.page * PER_PAGE;
@@ -162,6 +232,8 @@ async function renderReview() {
   const total = state.items.length;
   const pages = Math.max(1, Math.ceil(total / PER_PAGE));
   if (state.page >= pages) state.page = pages - 1;
+
+  ensureNamedDirs();
 
   $("review-title").textContent = state.dir;
   $("review-sub").textContent = `共 ${total} 张照片 · 第 ${state.page + 1} / ${pages} 页`;
@@ -280,7 +352,12 @@ function renderConfirmGroup(container, list, thumbs) {
     img.title = it.id;
     if (thumbs[it.id]) img.src = "data:image/jpeg;base64," + thumbs[it.id];
     const cap = document.createElement("figcaption");
-    cap.textContent = it.id;
+    const notes = [];
+    const named = state.namedDir.get(it.id);
+    if (named) notes.push("→" + named);
+    if (state.keepPhone.get(it.id)) notes.push("保留手机");
+    cap.textContent = it.id + (notes.length ? " · " + notes.join(" ") : "");
+    cap.title = cap.textContent;
     figure.appendChild(img);
     figure.appendChild(cap);
     figure.addEventListener("click", () => {
@@ -362,18 +439,27 @@ function confirmBrowsePath() {
 // ---------- 确认执行（复制→删除，后台任务 + 轮询） ----------
 function openConfirmModal() {
   const delIds = state.items.filter((it) => state.labels.get(it.id) === "DELETE").map((i) => i.id);
-  const moveIds = state.items.filter((it) => state.labels.get(it.id) === "KEEP_PC").map((i) => i.id);
+  const moves = state.items.filter((it) => state.labels.get(it.id) === "KEEP_PC").map((i) => ({
+    id: i.id,
+    named: state.namedDir.get(i.id) || "",
+    keep_phone: !!state.keepPhone.get(i.id),
+  }));
+  const namedCount = moves.filter((m) => m.named).length;
+  const keepCount = moves.filter((m) => m.keep_phone).length;
+  let moveDesc = `移到 PC ${moves.length} 张（复制到 moved${namedCount ? " 或 named/对应文件夹" : ""}`;
+  if (keepCount) moveDesc += `，其中 ${keepCount} 张同时保留手机原片`;
+  moveDesc += "）";
   $("modal-text").textContent =
     `确定删除 ${delIds.length} 张（复制到 recycle 后删除原片）、` +
-    `移到 PC ${moveIds.length} 张（复制到 moved）吗？\n输出目录：${state.dest || "（未填写）"}`;
+    `${moveDesc}吗？\n输出目录：${state.dest || "（未填写）"}`;
   $("modal").hidden = false;
   $("modal-ok").dataset.del = JSON.stringify(delIds);
-  $("modal-ok").dataset.move = JSON.stringify(moveIds);
+  $("modal-ok").dataset.move = JSON.stringify(moves);
 }
 
 async function execConfirm() {
   const delIds = JSON.parse($("modal-ok").dataset.del);
-  const moveIds = JSON.parse($("modal-ok").dataset.move);
+  const moves = JSON.parse($("modal-ok").dataset.move);
   if (!state.dest) {
     $("confirm-error").textContent = "请先填写输出目录。";
     return;
@@ -391,7 +477,7 @@ async function execConfirm() {
       body: JSON.stringify({
         iphone_dir: state.dir,
         delete_ids: delIds,
-        move_ids: moveIds,
+        moves: moves,
         dest: state.dest,
       }),
     });
@@ -399,7 +485,7 @@ async function execConfirm() {
     $("modal").hidden = true;
     window.alert(
       `完成：删除 ${data.to_delete} 张（写入 recycle）、转移到 PC ${data.to_move} 张` +
-      `（写入 moved）。\n输出目录：${state.dest}`
+      `（写入 moved / named）。\n输出目录：${state.dest}`
     );
     resetToSetup();
   } catch (err) {
@@ -443,18 +529,28 @@ function resetToSetup() {
   state.labels = new Map();
   state.page = 0;
   state.dir = "";
+  state.namedDirs = [];
+  state.namedLoadedFor = "";
+  state.namedDir = new Map();
+  state.keepPhone = new Map();
+  state.lightboxId = "";
   $("start-from").value = "";
   $("count").value = "";
   $("confirm-error").textContent = "";
+  $("named-new").value = "";
+  $("named-msg").textContent = "";
   show("view-setup");
   loadDirs();
 }
 
 // ---------- 点击放大 ----------
 async function openLightbox(id) {
+  state.lightboxId = id;
   const item = state.items.find((it) => it.id === id);
+  let isKeepPc = false;
   if (item) {
     const info = labelInfo(state.labels.get(id));
+    isKeepPc = info.value === "KEEP_PC";
     $("lightbox-title").textContent = item.id;
     $("lb-date").textContent = item.taken_date || "未知";
     $("lb-loc").textContent = item.location || "未知";
@@ -464,6 +560,12 @@ async function openLightbox(id) {
     $("lb-conf").textContent =
       item.confidence ? `置信度 ${(item.confidence * 100).toFixed(0)}%` : "";
     $("lb-reason").textContent = item.reason || "（无）";
+  }
+  const moveOpts = $("lb-move-options");
+  moveOpts.hidden = !isKeepPc;
+  if (isKeepPc) {
+    renderLightboxNamed(id);
+    loadNamedDirs();
   }
   const lbox = $("lightbox");
   lbox.hidden = false;
@@ -484,6 +586,7 @@ function closeLightbox() {
   const img = $("lightbox-img");
   if (img.src.startsWith("blob:")) URL.revokeObjectURL(img.src);
   img.src = "";
+  state.lightboxId = "";
   $("lightbox").hidden = true;
 }
 
@@ -493,6 +596,21 @@ $("prev-page").addEventListener("click", () => goPage(-1));
 $("next-page").addEventListener("click", () => goPage(1));
 $("btn-restart").addEventListener("click", () => show("view-setup"));
 $("btn-review-done").addEventListener("click", goConfirm);
+$("btn-named-mkdir").addEventListener("click", createNamedDir);
+$("named-new").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    createNamedDir();
+  }
+});
+$("lb-named").addEventListener("change", () => {
+  if (!state.lightboxId) return;
+  state.namedDir.set(state.lightboxId, $("lb-named").value);
+});
+$("lb-keep-phone").addEventListener("change", () => {
+  if (!state.lightboxId) return;
+  state.keepPhone.set(state.lightboxId, $("lb-keep-phone").checked);
+});
 $("btn-back-review").addEventListener("click", () => {
   show("view-review");
   renderReview();

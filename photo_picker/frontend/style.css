@@ -191,6 +191,33 @@ figcaption { padding: 8px; font-size: 0.78em; }
 }
 .pager-info { font-size: 0.9em; color: var(--muted); min-width: 60px; text-align: center; }
 
+/* ---- 审查视图：命名文件夹 ---- */
+.review-tools {
+  background: #fafbfc;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+.named-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.named-row:last-of-type { margin-bottom: 0; }
+.named-row select { width: auto; flex: 0 1 220px; }
+.named-row input { width: auto; flex: 1 1 200px; max-width: 260px; padding: 6px 10px; }
+#named-msg { font-size: 0.85em; }
+.named-hint { margin: 6px 0 0; font-size: 0.8em; }
+
+/* ---- 放大视图：KEEP_PC 输出选项 ---- */
+#lb-move-options { border-top: 1px dashed var(--border); padding-top: 10px; margin-top: 4px; }
+#lb-move-options select { width: 100%; }
+#lb-keep-phone { width: auto; margin-right: 6px; }
+.check-label { display: inline-flex; align-items: center; font-size: 0.9em; }
+
 /* ---- 确认视图 ---- */
 .confirm-cols {
   display: grid;

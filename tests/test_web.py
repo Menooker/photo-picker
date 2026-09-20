@@ -78,21 +78,27 @@ class FakePicker:
             return results, items
         return results
 
-    async def export_photos(self, top_dir, filenames, dest_root, dst_sub,
+    async def export_photos(self, top_dir, entries, dest_root, dst_sub,
                             on_progress=None):
         """镜像真实 PhotoPicker.export_photos：复制→删除，写本地 moved/recycle。"""
-        self.export_calls.append((top_dir, tuple(filenames), dst_sub))
-        for n, fn in enumerate(filenames, 1):
-            photo = SimpleNamespace(filename=fn, folder=top_dir,
-                                    remote_path=f"/DCIM/{top_dir}/{fn}")
+        self.export_calls.append((
+            top_dir,
+            tuple((e.filename, e.sub_path, e.keep_phone) for e in entries),
+            dst_sub,
+        ))
+        for n, e in enumerate(entries, 1):
+            photo = SimpleNamespace(filename=e.filename, folder=top_dir,
+                                    remote_path=f"/DCIM/{top_dir}/{e.filename}")
             raw = await self.importer.download_photo(photo)
-            target = Path(dest_root) / dst_sub / top_dir / fn
+            sub = e.sub_path or dst_sub
+            target = Path(dest_root) / sub / top_dir / e.filename
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(raw)
-            await self.importer.remove_file(photo.remote_path)
+            if not e.keep_phone:
+                await self.importer.remove_file(photo.remote_path)
             if on_progress:
-                on_progress(n, fn)
-        return len(filenames)
+                on_progress(n, e.filename)
+        return len(entries)
 
 
 def setup_fake():
@@ -140,7 +146,8 @@ async def main():
     with tempfile.TemporaryDirectory() as tempdir:
         resp = await web.api_confirm(web.ConfirmRequest(
             iphone_dir="100APPLE",
-            delete_ids=["IMG_0001.HEIC"], move_ids=["IMG_0002.HEIC"],
+            delete_ids=["IMG_0001.HEIC"],
+            moves=[web.MoveItem(id="IMG_0002.HEIC")],
             dest=tempdir))
         # 后台任务只能使用请求中固定的目录，不能再读取可变 session.dir。
         web.session.dir = "100CLOUD"
@@ -156,10 +163,34 @@ async def main():
         assert removed == ["/DCIM/100APPLE/IMG_0001.HEIC",
                            "/DCIM/100APPLE/IMG_0002.HEIC"], removed
         assert web.session.picker.export_calls == [
-            ("100APPLE", ("IMG_0001.HEIC",), "recycle"),
-            ("100APPLE", ("IMG_0002.HEIC",), "moved"),
+            ("100APPLE", (("IMG_0001.HEIC", "", False),), "recycle"),
+            ("100APPLE", (("IMG_0002.HEIC", "", False),), "moved"),
         ]
         print("api_confirm OK (copy→delete background task + transfer status)")
+
+        # named 子文件夹 + 同时保留手机
+        web.session.picker.importer.removed = []
+        resp2 = await web.api_confirm(web.ConfirmRequest(
+            iphone_dir="100APPLE",
+            moves=[web.MoveItem(id="IMG_0002.HEIC", named="旅行",
+                                keep_phone=True)],
+            dest=tempdir))
+        await web.session.job
+        tr2 = await web.api_transfer()
+        assert tr2["running"] is False and not tr2["error"], tr2
+        assert (Path(tempdir) / "named" / "旅行" / "100APPLE" / "IMG_0002.HEIC").is_file()
+        assert web.session.picker.importer.removed == []   # keep_phone 不删除
+        r2 = await web.api_named_dirs(dest=tempdir)
+        assert r2["dirs"] == ["旅行"], r2
+        r3 = await web.api_named_mkdir(web.MkdirRequest(dest=tempdir, name="工作"))
+        assert r3["dirs"] == ["工作", "旅行"], r3
+        assert (Path(tempdir) / "named" / "工作").is_dir()
+        try:
+            await web.api_named_mkdir(web.MkdirRequest(dest=tempdir, name="../x"))
+            raise AssertionError("should reject path-like folder name")
+        except web.HTTPException as e:
+            assert e.status_code == 400
+        print("api_named_dirs/mkdir OK (list + create named folder + security)")
 
         try:
             await web.api_confirm(web.ConfirmRequest(

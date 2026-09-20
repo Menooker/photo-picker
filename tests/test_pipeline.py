@@ -182,14 +182,17 @@ async def test_export_copy_then_delete():
     progress = []
     with tempfile.TemporaryDirectory() as d:
         n1 = await core_picker.PhotoPicker.export_photos(
-            p, "100APPLE", ["IMG_0001.HEIC", "IMG_0002.JPG"], d, "recycle",
+            p, "100APPLE",
+            [core_picker.ExportEntry("IMG_0001.HEIC"),
+             core_picker.ExportEntry("IMG_0002.JPG")],
+            d, "recycle",
             on_progress=lambda a, b: progress.append((a, b)))
         assert n1 == 2
         assert (Path(d) / "recycle" / "100APPLE" / "IMG_0001.HEIC").is_file()
         assert (Path(d) / "recycle" / "100APPLE" / "IMG_0002.JPG").is_file()
 
         n2 = await core_picker.PhotoPicker.export_photos(
-            p, "100APPLE", ["IMG_0002.JPG"], d, "moved")
+            p, "100APPLE", [core_picker.ExportEntry("IMG_0002.JPG")], d, "moved")
         assert n2 == 1
         assert (Path(d) / "moved" / "100APPLE" / "IMG_0002.JPG").is_file()
 
@@ -204,6 +207,26 @@ async def test_export_copy_then_delete():
     print("test_export_copy_then_delete OK")
 
 
+async def test_export_named_folder_and_keep_phone():
+    """named 子路径生效；keep_phone=True 只复制不删除手机原片。"""
+    imp = ExportImporter("100APPLE")
+    p = SimpleNamespace(importer=imp)
+    with tempfile.TemporaryDirectory() as d:
+        entries = [
+            core_picker.ExportEntry("IMG_0001.HEIC", sub_path="named/旅行"),
+            core_picker.ExportEntry("IMG_0002.JPG", sub_path="named/旅行",
+                                    keep_phone=True),
+        ]
+        n = await core_picker.PhotoPicker.export_photos(
+            p, "100APPLE", entries, d, "moved")
+        assert n == 2
+        assert (Path(d) / "named" / "旅行" / "100APPLE" / "IMG_0001.HEIC").is_file()
+        assert (Path(d) / "named" / "旅行" / "100APPLE" / "IMG_0002.JPG").is_file()
+        # 只有非 keep_phone 的文件被删除
+        assert imp.removed == ["/DCIM/100APPLE/IMG_0001.HEIC"]
+    print("test_export_named_folder_and_keep_phone OK")
+
+
 async def test_export_never_overwrites_backup():
     """同内容复用；不同内容从 (1) 起寻找未占用或内容相同的名称。"""
     imp = ExportImporter("100APPLE")
@@ -215,7 +238,7 @@ async def test_export_never_overwrites_backup():
         same = target_dir / "IMG_0001.HEIC"
         same.write_bytes(imp.bytes_by["IMG_0001.HEIC"])
         await core_picker.PhotoPicker.export_photos(
-            p, "100APPLE", ["IMG_0001.HEIC"], d, "recycle")
+            p, "100APPLE", [core_picker.ExportEntry("IMG_0001.HEIC")], d, "recycle")
         assert same.read_bytes() == imp.bytes_by["IMG_0001.HEIC"]
         assert not (target_dir / "IMG_0001 (1).HEIC").exists()
 
@@ -224,7 +247,7 @@ async def test_export_never_overwrites_backup():
         base.write_bytes(b"older-photo")
         first.write_bytes(b"another-photo")
         await core_picker.PhotoPicker.export_photos(
-            p, "100APPLE", ["IMG_0002.JPG"], d, "recycle")
+            p, "100APPLE", [core_picker.ExportEntry("IMG_0002.JPG")], d, "recycle")
         assert base.read_bytes() == b"older-photo"
         assert first.read_bytes() == b"another-photo"
         assert (target_dir / "IMG_0002 (2).JPG").read_bytes() == imp.bytes_by[
@@ -233,7 +256,7 @@ async def test_export_never_overwrites_backup():
 
         # AFC 删除失败后的重试会找到刚写好的 (2)，不会再制造 (3)。
         await core_picker.PhotoPicker.export_photos(
-            p, "100APPLE", ["IMG_0002.JPG"], d, "recycle")
+            p, "100APPLE", [core_picker.ExportEntry("IMG_0002.JPG")], d, "recycle")
         assert not (target_dir / "IMG_0002 (3).JPG").exists()
         assert imp.removed == [
             "/DCIM/100APPLE/IMG_0001.HEIC",
@@ -249,6 +272,7 @@ async def main():
     await test_tail_batch_submitted()
     await test_afc_remove_contract()
     await test_export_copy_then_delete()
+    await test_export_named_folder_and_keep_phone()
     await test_export_never_overwrites_backup()
     print("ALL OK")
 

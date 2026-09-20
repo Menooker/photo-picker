@@ -1,9 +1,10 @@
 """FastAPI Web 服务器：通过浏览器驱动照片分类 + 删除 / 搬移到 PC。
 
 「删除」= 把手机原片复制到本地磁盘 <输出目录>/recycle 后删掉手机上的原片；
-「转移 PC」= 复制到 <输出目录>/moved 后删掉手机上的原片。
-本地两个目录下会复刻手机相册路径（如 moved/100APPLE/IMG_0100.JPG），
-每个文件按「先复制、再删除」的顺序逐个处理。
+「转移 PC」= 复制到 <输出目录>/moved（或 <输出目录>/named/<文件夹>）后删掉手机上的原片；
+    若选中「同时保留到手机和 PC」，则只复制不删除手机原片。
+本地目录会复刻手机相册路径（如 moved/100APPLE/IMG_0100.JPG），
+每个文件按「先复制、再删除（可选）」的顺序逐个处理。
 """
 import asyncio
 import base64
@@ -19,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from .core.picker import PhotoPicker
+from .core.picker import ExportEntry, PhotoPicker
 
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 FULL_MAX_SIZE = (2400, 2400)  # 放大查看时最大边
@@ -84,11 +85,28 @@ class ClassifyRequest(BaseModel):
     count: int | None = None
 
 
+class MoveItem(BaseModel):
+    """一张 KEEP_PC 照片的导出选项。
+
+    named 为空 = 自动（输出到 moved/），否则输出到 <dest>/named/<named>/；
+    keep_phone=True = 同时保留到手机和 PC（复制到 PC 但不删手机原片）。
+    """
+
+    id: str
+    named: str = ""
+    keep_phone: bool = False
+
+
 class ConfirmRequest(BaseModel):
     iphone_dir: str
     delete_ids: list[str] = Field(default_factory=list)
-    move_ids: list[str] = Field(default_factory=list)
+    moves: list[MoveItem] = Field(default_factory=list)
     dest: str  # 本地输出根目录，会生成 moved / recycle 两个子文件夹
+
+
+class MkdirRequest(BaseModel):
+    dest: str  # 输出目录，在其下创建 named/<name>
+    name: str  # 新建的文件夹名（仅单个目录项）
 
 
 @dataclass(frozen=True)
@@ -97,7 +115,7 @@ class TransferPlan:
 
     iphone_dir: str
     delete_ids: tuple[str, ...]
-    move_ids: tuple[str, ...]
+    moves: tuple[MoveItem, ...]
     dest: str
 
 
@@ -105,6 +123,25 @@ def _is_plain_component(value: str) -> bool:
     """只允许一个目录项，禁止把客户端值当成相对路径拼接。"""
     return bool(value) and value not in (".", "..") and not any(
         char in value for char in ("/", "\\", "\x00")
+    )
+
+
+def _normalize_dest(dest: str) -> Path:
+    """校验并规范化输出目录（支持空校验与引号与 ~ 展开）。"""
+    dest = dest.strip().strip('"')
+    if not dest:
+        raise HTTPException(status_code=400, detail="请先选择输出目录")
+    return Path(os.path.expanduser(dest)).resolve()
+
+
+def _named_dirs(named_root: Path) -> list[str]:
+    """列出 named_root 下的子文件夹名（隐藏目录剔除）。"""
+    if not named_root.is_dir():
+        return []
+    return sorted(
+        (p.name for p in named_root.iterdir()
+         if p.is_dir() and not p.name.startswith(".")),
+        key=str.lower,
     )
 
 
@@ -260,14 +297,12 @@ async def api_confirm(req: ConfirmRequest):
         if session.running:
             raise HTTPException(status_code=409, detail="分类任务进行中")
 
-        dest = req.dest.strip().strip('"')
-        if not dest:
-            raise HTTPException(status_code=400, detail="请先选择输出目录")
-        dest = str(Path(os.path.expanduser(dest)).resolve())
+        dest = _normalize_dest(req.dest)
 
         iphone_dir = req.iphone_dir.strip()
         delete_ids = tuple(req.delete_ids)
-        move_ids = tuple(req.move_ids)
+        moves = tuple(req.moves)
+        move_ids = [m.id for m in moves]
         if len(delete_ids) != len(set(delete_ids)):
             raise HTTPException(status_code=400, detail="删除列表包含重复文件")
         if len(move_ids) != len(set(move_ids)):
@@ -285,6 +320,13 @@ async def api_confirm(req: ConfirmRequest):
         )
         if invalid is not None:
             raise HTTPException(status_code=400, detail=f"照片文件名无效: {invalid}")
+        bad_named = next(
+            (m.named for m in moves
+             if m.named and not _is_plain_component(m.named)),
+            None,
+        )
+        if bad_named is not None:
+            raise HTTPException(status_code=400, detail=f"输出子文件夹无效: {bad_named}")
 
         try:
             await session.ensure_connected()
@@ -306,11 +348,20 @@ async def api_confirm(req: ConfirmRequest):
             except OSError as e:
                 raise HTTPException(
                     status_code=400, detail=f"无法在 {dest} 下创建 {sub} 目录: {e}")
+        for m in moves:
+            if not m.named:
+                continue
+            try:
+                os.makedirs(os.path.join(dest, "named", m.named), exist_ok=True)
+            except OSError as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"无法在 {dest}/named 下创建 {m.named} 目录: {e}")
         plan = TransferPlan(
             iphone_dir=iphone_dir,
             delete_ids=delete_ids,
-            move_ids=move_ids,
-            dest=dest,
+            moves=moves,
+            dest=str(dest),
         )
         session.transfer_status = {
             "running": True, "error": "", "done": 0,
@@ -319,12 +370,12 @@ async def api_confirm(req: ConfirmRequest):
         }
         session.job = asyncio.create_task(_run_transfer(plan))
     return {"started": True, "to_delete": len(delete_ids),
-            "to_move": len(move_ids), "dest": dest,
+            "to_move": len(move_ids), "dest": str(dest),
             "iphone_dir": iphone_dir}
 
 
 async def _run_transfer(plan: TransferPlan):
-    """后台执行：先处理「删除」（recycle），再处理「转移到 PC」（moved）。"""
+    """后台执行：先处理「删除」（recycle），再处理「转移到 PC」（moved / named）。"""
     done = 0
 
     def on_progress(_n: int, filename: str) -> None:
@@ -337,12 +388,18 @@ async def _run_transfer(plan: TransferPlan):
         if plan.delete_ids:
             session.transfer_status["phase"] = "recycle"
             await session.picker.export_photos(
-                plan.iphone_dir, plan.delete_ids, plan.dest, "recycle",
+                plan.iphone_dir,
+                [ExportEntry(fn) for fn in plan.delete_ids],
+                plan.dest, "recycle",
                 on_progress=on_progress)
-        if plan.move_ids:
+        if plan.moves:
             session.transfer_status["phase"] = "moved"
             await session.picker.export_photos(
-                plan.iphone_dir, plan.move_ids, plan.dest, "moved",
+                plan.iphone_dir,
+                [ExportEntry(m.id, f"named/{m.named}" if m.named else "",
+                             m.keep_phone)
+                 for m in plan.moves],
+                plan.dest, "moved",
                 on_progress=on_progress)
     except Exception:
         traceback.print_exc()
@@ -378,6 +435,33 @@ async def api_browse(path: str = ""):
     parent = str(base.parent) if base.parent != base else ""
     return {"path": str(base), "name": base.name or str(base),
             "parent": parent, "dirs": dirs, "sep": os.sep}
+
+
+@app.get("/api/named/dirs")
+async def api_named_dirs(dest: str = Query(...)):
+    """列出 <dest>/named/ 下的子文件夹名，供 KEEP_PC 照片单独选择输出位置。"""
+    base = _normalize_dest(dest)
+    return {"dest": str(base), "dirs": _named_dirs(base / "named")}
+
+
+@app.post("/api/named/mkdir")
+async def api_named_mkdir(req: MkdirRequest):
+    """在 <dest>/named/ 下新建子文件夹，返回最新的文件夹清单。"""
+    base = _normalize_dest(req.dest)
+    name = req.name.strip()
+    if not name or name in (".", "..") or name.startswith(".") or not (
+        1 <= len(name) <= 64
+    ):
+        raise HTTPException(status_code=400, detail="文件夹名无效")
+    if not _is_plain_component(name):
+        raise HTTPException(status_code=400, detail="文件夹名无效")
+    named_root = base / "named"
+    try:
+        named_root.mkdir(parents=True, exist_ok=True)
+        (named_root / name).mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise _http_500(str(e))
+    return {"dest": str(base), "dirs": _named_dirs(named_root)}
 
 
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
