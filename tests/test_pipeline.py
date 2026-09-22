@@ -94,13 +94,14 @@ async def _run_classify(count, delay=0.05, llm_workers=4):
 
 
 async def test_batch_sizes_and_order():
-    count = 65  # 期望批次 [30, 30, 5]
+    g = cli.LLM_GROUP_MAX
+    count = g * 2 + 15  # 期望批次 [g, g, 15]
     fake_llm, picker, results = await _run_classify(count)
     expected = expected_order(count)
-    slices = [expected[0:30], expected[30:60], expected[60:65]]
+    slices = [expected[0:g], expected[g:2 * g], expected[2 * g:count]]
     assert len(results) == count
     # fake_llm.calls 按完成顺序记录，批次内容才是提交内容；用集合做无序匹配
-    assert sorted(len(c) for c in fake_llm.calls) == [5, 30, 30]
+    assert sorted(len(c) for c in fake_llm.calls) == sorted(len(s) for s in slices)
     assert {tuple(c) for c in fake_llm.calls} == {tuple(s) for s in slices}
     # results 保持提交顺序（= photos 数组顺序），严格验证
     assert [r.id for r in results] == expected
@@ -109,7 +110,7 @@ async def test_batch_sizes_and_order():
 
 
 async def test_backpressure():
-    count = 200  # 7 个 batch
+    count = cli.LLM_GROUP_MAX * 8  # 8 个 batch
     fake_llm, picker, results = await _run_classify(count, delay=0.2)
     expected_batches = (count + cli.LLM_GROUP_MAX - 1) // cli.LLM_GROUP_MAX
     limit = cli.LLM_QUEUE_MAX // cli.LLM_GROUP_MAX
@@ -121,9 +122,9 @@ async def test_backpressure():
 
 
 async def test_tail_batch_submitted():
-    count = 30  # 恰好一个整批，无尾批
+    count = cli.LLM_GROUP_MAX  # 恰好一个整批，无尾批
     fake_llm, _, results = await _run_classify(count)
-    assert [len(c) for c in fake_llm.calls] == [30]
+    assert [len(c) for c in fake_llm.calls] == [cli.LLM_GROUP_MAX]
     assert [r.id for r in results] == expected_order(count)
     print("test_tail_batch_submitted OK")
 
@@ -173,6 +174,178 @@ async def test_afc_remove_contract():
         assert path in str(exc)
         assert exc.__cause__ is failure
     print("test_afc_remove_contract OK")
+
+
+async def test_with_reconnect_retries_on_disconnect():
+    """断连类异常触发重连重试；数据类错误直接向上抛，不无限重试。"""
+    import photo_picker.core.importer as core_importer
+    core_importer.RETRY_INTERVAL_SECONDS = 0.0
+
+    holder = {"calls": 0}
+
+    class FlakyAfc:
+        async def get_file_contents(self, path):
+            holder["calls"] += 1
+            if holder["calls"] < 3:
+                raise core_importer.MuxException("device disconnected")
+            return b"jpeg-bytes"
+
+    imp = core_importer.IPhoneImporter()
+    establishes = []
+
+    async def fake_establish():
+        establishes.append(1)
+        imp._afc = FlakyAfc()
+
+    imp._establish = fake_establish
+    imp._afc = FlakyAfc()
+
+    photo = SimpleNamespace(filename="IMG_0001.HEIC",
+                            remote_path="/DCIM/100APPLE/IMG_0001.HEIC")
+    raw = await imp.download_photo(photo)
+    assert raw == b"jpeg-bytes"
+    # 前 2 次断连 → 重连 → 重试，第 3 次成功
+    assert holder["calls"] == 3
+    assert len(establishes) == 2
+
+    # 数据错误（文件不存在）不重试，原样上抛
+    holder2 = {"calls": 0}
+
+    class NotFoundAfc:
+        async def get_file_contents(self, path):
+            holder2["calls"] += 1
+            raise core_importer.AfcFileNotFoundError("not found", 9)
+
+    imp._afc = NotFoundAfc()
+    try:
+        await imp.download_photo(photo)
+        raise AssertionError("should propagate AfcFileNotFoundError")
+    except core_importer.AfcFileNotFoundError:
+        pass
+    assert holder2["calls"] == 1  # 未触发重连重试
+    print("test_with_reconnect_retries_on_disconnect OK")
+
+
+async def test_with_reconnect_retries_establish_failure():
+    """重连动作本身失败（断连类）也会重试；非断连类错误立即上抛。"""
+    import photo_picker.core.importer as core_importer
+    core_importer.RETRY_INTERVAL_SECONDS = 0.0
+
+    photo = SimpleNamespace(filename="IMG_0001.HEIC",
+                            remote_path="/DCIM/100APPLE/IMG_0001.HEIC")
+
+    class GoodAfc:
+        async def get_file_contents(self, path):
+            return b"jpeg-bytes"
+
+    imp = core_importer.IPhoneImporter()
+    attempts = {"establish": 0}
+
+    async def flaky_establish():
+        attempts["establish"] += 1
+        if attempts["establish"] < 3:
+            raise core_importer.MuxException("device disconnected")
+        imp._afc = GoodAfc()
+
+    imp._afc = None
+    imp._establish = flaky_establish
+    raw = await imp.download_photo(photo)
+    assert raw == b"jpeg-bytes"
+    # 前 2 次 establish 断连 → 重试，第 3 次成功
+    assert attempts["establish"] == 3
+
+    # 非断连类错误：establish 抛 ValueError 不重试，立即上抛
+    attempts["establish"] = 0
+
+    async def broken_establish():
+        attempts["establish"] += 1
+        raise ValueError("boom")
+
+    imp._afc = None
+    imp._establish = broken_establish
+    try:
+        await imp.download_photo(photo)
+        raise AssertionError("should propagate ValueError")
+    except ValueError:
+        pass
+    assert attempts["establish"] == 1
+    print("test_with_reconnect_retries_establish_failure OK")
+
+
+async def test_with_reconnect_rejects_changed_device():
+    """重连读到的 iPhone serial 与首连不一致时，绝不当作 establish 成功：
+    在建连前直接抛 DeviceMismatchError；同一 serial（原机）重连正常。"""
+    import photo_picker.core.importer as core_importer
+    core_importer.RETRY_INTERVAL_SECONDS = 0.0
+
+    created = []
+
+    class FakeDevice:
+        def __init__(self, serial):
+            self.serial = serial
+
+    class FakeLockdown:
+        def __init__(self, name):
+            self.name = name
+            self.closed = False
+
+        async def get_value(self, key):
+            if key == "DeviceName":
+                return self.name
+            return {"ProductType": "iPhone", "ProductVersion": "18.5"}[key]
+
+        async def close(self):
+            self.closed = True
+
+    class FakeAfcService:
+        def __init__(self, lockdown):
+            self.lockdown = lockdown
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    serials = iter(["SERIAL-A", "SERIAL-B", "SERIAL-A"])
+    names_by = {"SERIAL-A": "iPhone A", "SERIAL-B": "iPhone B"}
+
+    orig_devices = core_importer.list_devices
+    orig_create = core_importer.create_using_usbmux
+    orig_afc = core_importer.AfcService
+    try:
+        async def fake_list_devices():
+            return [FakeDevice(next(serials))]
+
+        async def fake_create(serial):
+            ld = FakeLockdown(names_by[serial])
+            created.append(ld)
+            return ld
+
+        core_importer.list_devices = fake_list_devices
+        core_importer.create_using_usbmux = fake_create
+        core_importer.AfcService = FakeAfcService
+
+        imp = core_importer.IPhoneImporter()
+        info = await imp.connect()
+        assert info["serial"] == "SERIAL-A" and info["name"] == "iPhone A"
+        assert imp.serial == "SERIAL-A"
+
+        # 断连后读到另一台设备：必须在建连前拒绝
+        await imp._teardown()
+        try:
+            await imp.connect()
+            raise AssertionError("should reject changed device")
+        except core_importer.DeviceMismatchError:
+            pass
+        assert imp.serial == "SERIAL-A"
+        assert imp._afc is None and imp._lockdown is None  # 没有给错误设备建连
+
+        # 原机（同一 serial）重新连回 → 正常
+        assert await imp.connect() == info
+    finally:
+        core_importer.list_devices = orig_devices
+        core_importer.create_using_usbmux = orig_create
+        core_importer.AfcService = orig_afc
+    print("test_with_reconnect_rejects_changed_device OK")
 
 
 async def test_export_copy_then_delete():
@@ -271,6 +444,9 @@ async def main():
     await test_backpressure()
     await test_tail_batch_submitted()
     await test_afc_remove_contract()
+    await test_with_reconnect_retries_on_disconnect()
+    await test_with_reconnect_retries_establish_failure()
+    await test_with_reconnect_rejects_changed_device()
     await test_export_copy_then_delete()
     await test_export_named_folder_and_keep_phone()
     await test_export_never_overwrites_backup()
