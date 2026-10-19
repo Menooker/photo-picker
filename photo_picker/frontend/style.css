@@ -147,8 +147,21 @@ input:focus, select:focus { outline: 2px solid var(--accent); border-color: tran
   overflow: hidden;
   background: #fff;
   transition: transform 0.12s ease, box-shadow 0.12s ease;
+  position: relative;
 }
 .cell:hover { transform: translateY(-2px); box-shadow: 0 6px 14px rgba(16, 24, 40, 0.12); }
+
+.cell-check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  z-index: 1;
+}
 
 .cell img {
   width: 100%;
@@ -208,9 +221,15 @@ figcaption { padding: 8px; font-size: 0.78em; }
 }
 .named-row:last-of-type { margin-bottom: 0; }
 .named-row select { width: auto; flex: 0 1 220px; }
-.named-row input { width: auto; flex: 1 1 200px; max-width: 260px; padding: 6px 10px; }
+.named-row input { width: auto; flex: 0 1 200px; max-width: 200px; padding: 6px 10px; }
 #named-msg { font-size: 0.85em; }
 .named-hint { margin: 6px 0 0; font-size: 0.8em; }
+
+/* ---- 批处理 ---- */
+.batch-status { margin-left: auto; font-size: 0.85em; white-space: nowrap; }
+.batch-controls { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.batch-controls select { width: auto; flex: 0 1 175px; font-size: 0.85em; }
+.batch-controls .btn-small { padding: 6px 12px; font-size: 0.85em; flex-shrink: 0; }
 
 /* ---- 放大视图：KEEP_PC 输出选项 ---- */
 #lb-move-options { border-top: 1px dashed var(--border); padding-top: 10px; margin-top: 4px; }

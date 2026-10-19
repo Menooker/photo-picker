@@ -70,11 +70,18 @@
       <div id="review-tools" class="review-tools">
         <div class="named-row">
           <span class="muted">命名文件夹（位于 <b id="named-dest-path" class="muted"></b>named/ 下）：</span>
+          <span id="batch-status" class="muted batch-status">批处理（已选择 <b id="batch-count">0</b> 张）</span>
         </div>
         <div class="named-row">
           <input id="named-new" placeholder="新建文件夹名" maxlength="64" autocomplete="off">
           <button id="btn-named-mkdir" type="button" class="btn">新建</button>
           <span id="named-msg" class="muted"></span>
+          <div class="batch-controls">
+            <button id="btn-batch-clear" type="button" class="btn btn-small" title="取消所有照片的勾选">取消多选</button>
+            <select id="batch-label" title="批量设置照片标签"></select>
+            <select id="batch-named" title="批量设置移动位置（仅移动PC）"></select>
+            <select id="batch-keep" title="批量设置保留方式（仅移动PC）"></select>
+          </div>
         </div>
         <p class="muted named-hint">KEEP_PC（移到 PC）的照片可在点开大图后选择输出到某个命名文件夹；默认“(自动)”输出到 moved。</p>
       </div>

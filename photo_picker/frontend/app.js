@@ -19,6 +19,7 @@ const state = {
   namedLoadedFor: "",   // 已加载 namedDirs 时的 dest（避免每页重复请求）
   namedDir: new Map(),  // id -> 选中的命名子文件夹（"" = 自动 → moved/）
   keepPhone: new Map(), // id -> 是否同时保留手机原片
+  selected: new Set(),  // 勾选用于批处理的照片 id
   lightboxId: "",       // 当前放大查看的照片 id
 };
 
@@ -29,6 +30,139 @@ const escapeHtml = (s) =>
 
 function labelInfo(value) {
   return LABELS.find((l) => l.value === value) || LABELS[LABELS.length - 1];
+}
+
+// ---------- 批处理 ----------
+function checkedIds() {
+  return [...state.selected];
+}
+
+function updateBatchStatus() {
+  $("batch-count").textContent = state.selected.size;
+}
+
+function cellById(id) {
+  return document.querySelector(`#review-grid [data-id="${CSS.escape(id)}"]`);
+}
+
+function updateCellLabel(cell, value) {
+  const info = labelInfo(value);
+  const badge = cell.querySelector(".badge");
+  badge.className = "badge " + info.cls;
+  badge.textContent = info.key;
+  cell.querySelector(".label-select").value = value;
+}
+
+function nonKeepPcIds(ids) {
+  return ids.filter((id) => state.labels.get(id) !== "KEEP_PC");
+}
+
+function resetBatchSelects() {
+  $("batch-label").value = "";
+  $("batch-named").value = "";
+  $("batch-keep").value = "";
+}
+
+function onBatchClear() {
+  state.selected.clear();
+  document.querySelectorAll(".cell-check").forEach((cb) => {
+    if (cb.checked) cb.checked = false;
+  });
+  updateBatchStatus();
+}
+
+function renderBatchNamed() {
+  const sel = $("batch-named");
+  const keep = sel.value;
+  sel.innerHTML = "";
+  const opts = [["", "移动位置：保持现状"], ["__auto__", "(自动) 移到 moved"]];
+  for (const name of state.namedDirs) opts.push(["d:" + name, name]);
+  for (const [value, text] of opts) {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = text;
+    sel.appendChild(o);
+  }
+  sel.value = keep;
+}
+
+function onBatchLabelChange() {
+  const value = $("batch-label").value;
+  resetBatchSelects();
+  const ids = checkedIds();
+  if (!value || !ids.length) return;
+  for (const id of ids) {
+    state.labels.set(id, value);
+    const cell = cellById(id);
+    if (cell) updateCellLabel(cell, value);
+  }
+}
+
+function onBatchNamedChange() {
+  const value = $("batch-named").value;
+  resetBatchSelects();
+  const ids = checkedIds();
+  if (!value || !ids.length) return;
+  const bad = nonKeepPcIds(ids);
+  if (bad.length) {
+    window.alert(
+      `不能为非「移动PC」的照片设置移动位置：其中 ${bad.length} 张标签不是「移到PC」。\n` +
+      `请先批量/逐个将它们的标签改为「移到PC」再设置。`
+    );
+    return;
+  }
+  const target = value === "__auto__" ? "" : value.replace(/^d:/, "");
+  for (const id of ids) {
+    state.namedDir.set(id, target);
+    if (state.lightboxId === id) renderLightboxNamed(id);
+  }
+}
+
+function onBatchKeepChange() {
+  const value = $("batch-keep").value;
+  resetBatchSelects();
+  const ids = checkedIds();
+  if (!value || !ids.length) return;
+  const bad = nonKeepPcIds(ids);
+  if (bad.length) {
+    window.alert(
+      `不能为非「移动PC」的照片设置保留方式：其中 ${bad.length} 张标签不是「移到PC」。\n` +
+      `请先批量/逐个将它们的标签改为「移到PC」再设置。`
+    );
+    return;
+  }
+  const keep = value === "yes";
+  for (const id of ids) {
+    state.keepPhone.set(id, keep);
+  }
+}
+
+function initBatchControls() {
+  const labelSel = $("batch-label");
+  labelSel.innerHTML = "";
+  const opts = [["", "标签：保持现状"]];
+  for (const l of LABELS) opts.push([l.value, l.key]);
+  for (const [value, text] of opts) {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = text;
+    labelSel.appendChild(o);
+  }
+  const keepSel = $("batch-keep");
+  keepSel.innerHTML = "";
+  const keepOpts = [
+    ["", "保留方式：保持现状"],
+    ["yes", "同时保留手机和PC"],
+    ["no", "只保留PC（删除原片）"],
+  ];
+  for (const [value, text] of keepOpts) {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = text;
+    keepSel.appendChild(o);
+  }
+  renderBatchNamed();
+  updateBatchStatus();
 }
 
 function show(view) {
@@ -163,6 +297,7 @@ async function loadNamedDirs() {
   try {
     const d = await fetchJSON("/api/named/dirs?dest=" + encodeURIComponent(state.dest));
     state.namedDirs = d.dirs;
+    renderBatchNamed();
     if (!$("lightbox").hidden && state.lightboxId) {
       renderLightboxNamed(state.lightboxId);
     }
@@ -214,6 +349,7 @@ async function createNamedDir() {
     state.namedDirs = d.dirs;
     state.namedLoadedFor = state.dest;
     input.value = "";
+    renderBatchNamed();
     if (!$("lightbox").hidden && state.lightboxId) {
       renderLightboxNamed(state.lightboxId);
     }
@@ -251,6 +387,18 @@ async function renderReview() {
     cell.className = "cell";
     cell.dataset.id = it.id;
 
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.className = "cell-check";
+    check.title = "勾选后可批量处理";
+    check.checked = state.selected.has(it.id);
+    check.addEventListener("change", () => {
+      if (check.checked) state.selected.add(it.id);
+      else state.selected.delete(it.id);
+      updateBatchStatus();
+    });
+    cell.appendChild(check);
+
     const img = document.createElement("img");
     img.alt = it.id;
     img.loading = "lazy";
@@ -279,12 +427,12 @@ async function renderReview() {
     img.addEventListener("click", () => openLightbox(it.id));
     cell.querySelector(".label-select").addEventListener("change", (ev) => {
       state.labels.set(ev.target.dataset.id, ev.target.value);
-      const info2 = labelInfo(ev.target.value);
-      fig.querySelector(".badge").className = "badge " + info2.cls;
-      fig.querySelector(".badge").textContent = info2.key;
+      updateCellLabel(cell, ev.target.value);
     });
     $("review-grid").appendChild(cell);
   }
+
+  updateBatchStatus();
 
   $("page-info").textContent = `${state.page + 1} / ${pages}`;
   $("prev-page").disabled = state.page === 0;
@@ -294,6 +442,7 @@ async function renderReview() {
 function goPage(delta) {
   const pages = Math.max(1, Math.ceil(state.items.length / PER_PAGE));
   state.page = Math.min(pages - 1, Math.max(0, state.page + delta));
+  onBatchClear();
   renderReview();
 }
 
@@ -533,6 +682,9 @@ function resetToSetup() {
   state.namedLoadedFor = "";
   state.namedDir = new Map();
   state.keepPhone = new Map();
+  state.selected.clear();
+  resetBatchSelects();
+  $("batch-count").textContent = "0";
   state.lightboxId = "";
   $("start-from").value = "";
   $("count").value = "";
@@ -597,6 +749,10 @@ $("next-page").addEventListener("click", () => goPage(1));
 $("btn-restart").addEventListener("click", () => show("view-setup"));
 $("btn-review-done").addEventListener("click", goConfirm);
 $("btn-named-mkdir").addEventListener("click", createNamedDir);
+$("batch-label").addEventListener("change", onBatchLabelChange);
+$("batch-named").addEventListener("change", onBatchNamedChange);
+$("batch-keep").addEventListener("change", onBatchKeepChange);
+$("btn-batch-clear").addEventListener("click", onBatchClear);
 $("named-new").addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
@@ -643,6 +799,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 show("view-setup");
+initBatchControls();
 $("dest-path").value = state.dest;
 loadDirs();
 loadUsage();
